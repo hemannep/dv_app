@@ -30,6 +30,7 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
   XFile? _capturedImage;
   String? _validationMessage;
   Color _overlayColor = Colors.white;
+  bool _isInitializing = true;
 
   @override
   void initState() {
@@ -41,52 +42,96 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _cameraController?.dispose();
+    _disposeCamera();
     super.dispose();
+  }
+
+  void _disposeCamera() {
+    _cameraController?.dispose();
+    _cameraController = null;
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_cameraController?.value.isInitialized != true) return;
+    final CameraController? cameraController = _cameraController;
+
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      return;
+    }
 
     if (state == AppLifecycleState.inactive) {
-      _cameraController?.dispose();
+      _disposeCamera();
+      setState(() {
+        _isCameraInitialized = false;
+      });
     } else if (state == AppLifecycleState.resumed) {
       _initializeCamera();
     }
   }
 
   Future<void> _initializeCamera() async {
+    setState(() {
+      _isInitializing = true;
+      _isCameraInitialized = false;
+    });
+
     try {
+      // Get available cameras
       _cameras = await availableCameras();
-      if (_cameras.isNotEmpty) {
-        // Use front camera if available for selfies
-        final frontCamera = _cameras.firstWhere(
-          (camera) => camera.lensDirection == CameraLensDirection.front,
-          orElse: () => _cameras.first,
-        );
 
-        _cameraController = CameraController(
-          frontCamera,
-          ResolutionPreset.high,
-          enableAudio: false,
-        );
+      if (_cameras.isEmpty) {
+        _showErrorSnackBar('No cameras available on this device');
+        setState(() {
+          _isInitializing = false;
+        });
+        return;
+      }
 
-        await _cameraController!.initialize();
+      // Find front camera for selfies, fallback to first camera
+      final frontCamera = _cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.front,
+        orElse: () => _cameras.first,
+      );
 
-        if (mounted) {
-          setState(() {
-            _isCameraInitialized = true;
-          });
-        }
+      // Dispose previous controller if exists
+      await _cameraController?.dispose();
+
+      // Create new controller
+      _cameraController = CameraController(
+        frontCamera,
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
+
+      // Initialize the controller
+      await _cameraController!.initialize();
+
+      // Verify initialization was successful
+      if (_cameraController!.value.isInitialized && mounted) {
+        setState(() {
+          _isCameraInitialized = true;
+          _isInitializing = false;
+        });
+      } else {
+        throw Exception('Camera failed to initialize properly');
       }
     } catch (e) {
-      _showErrorSnackBar('Failed to initialize camera: $e');
+      debugPrint('Camera initialization error: $e');
+      _showErrorSnackBar('Failed to initialize camera: ${e.toString()}');
+      setState(() {
+        _isInitializing = false;
+        _isCameraInitialized = false;
+      });
     }
   }
 
   Future<void> _capturePhoto() async {
-    if (_cameraController?.value.isInitialized != true) return;
+    if (!_isCameraInitialized ||
+        _cameraController?.value.isInitialized != true ||
+        _isProcessing) {
+      return;
+    }
 
     setState(() {
       _isProcessing = true;
@@ -94,29 +139,43 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
     });
 
     try {
+      // Flash effect
+      setState(() {
+        _overlayColor = Colors.white;
+      });
+
+      // Capture image
       final XFile image = await _cameraController!.takePicture();
 
-      // Process and validate the photo immediately
+      // Reset flash effect
+      await Future.delayed(const Duration(milliseconds: 100));
+      setState(() {
+        _overlayColor = Colors.transparent;
+      });
+
+      // Process and validate the photo
       await _processAndValidatePhoto(image.path);
     } catch (e) {
-      _showErrorSnackBar('Failed to capture photo: $e');
+      debugPrint('Capture error: $e');
+      _showErrorSnackBar('Failed to capture photo: ${e.toString()}');
       setState(() {
         _isProcessing = false;
+        _overlayColor = Colors.transparent;
       });
     }
   }
 
   Future<void> _processAndValidatePhoto(String imagePath) async {
     try {
-      // First, validate the photo
+      // Validate the photo
       final validationResult = await PhotoValidator.validatePhoto(
         imagePath,
         isBabyMode: _isBabyMode,
       );
 
-      if (validationResult.isValid) {
-        // Photo is valid, navigate to preview
-        if (mounted) {
+      if (mounted) {
+        if (validationResult.isValid) {
+          // Photo is valid, navigate to preview
           final result = await Navigator.push(
             context,
             MaterialPageRoute(
@@ -131,25 +190,14 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
           if (result == 'saved') {
             _showSuccessSnackBar('Photo saved successfully!');
           }
+        } else {
+          // Photo has issues, show validation sheet
+          _showValidationSheet(validationResult);
         }
-      } else {
-        // Photo has issues, show detailed feedback
-        _showValidationErrors(validationResult);
-        setState(() {
-          _overlayColor = Colors.red.withOpacity(0.3);
-        });
-
-        // Reset overlay color after 2 seconds
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) {
-            setState(() {
-              _overlayColor = Colors.white;
-            });
-          }
-        });
       }
     } catch (e) {
-      _showErrorSnackBar('Failed to process photo: $e');
+      debugPrint('Validation error: $e');
+      _showErrorSnackBar('Failed to validate photo: ${e.toString()}');
     } finally {
       setState(() {
         _isProcessing = false;
@@ -157,42 +205,38 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
     }
   }
 
-  void _showValidationErrors(PhotoValidationResult result) {
-    final errors = result.errors;
-    String message = "Photo issues detected:\n";
-
-    for (int i = 0; i < errors.length && i < 3; i++) {
-      message += "• ${errors[i]}\n";
-    }
-
-    if (errors.length > 3) {
-      message += "• And ${errors.length - 3} more issues...";
-    }
-
+  void _showValidationSheet(PhotoValidationResult validationResult) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
+      isDismissible: false,
       backgroundColor: Colors.transparent,
       builder: (context) => PhotoValidationSheet(
-        validationResult: result,
+        validationResult: validationResult,
         isBabyMode: _isBabyMode,
-        onRetake: () => Navigator.pop(context),
+        onRetake: () {
+          Navigator.pop(context);
+        },
       ),
     );
   }
 
   Future<void> _pickFromGallery() async {
-    try {
-      setState(() {
-        _isProcessing = true;
-      });
+    if (_isProcessing) return;
 
+    setState(() {
+      _isProcessing = true;
+    });
+
+    try {
       final String? imagePath = await PhotoGalleryService.pickFromGallery();
 
       if (imagePath != null) {
         await _processAndValidatePhoto(imagePath);
       }
     } catch (e) {
-      _showErrorSnackBar('Failed to pick image: $e');
+      debugPrint('Gallery pick error: $e');
+      _showErrorSnackBar('Failed to pick image: ${e.toString()}');
     } finally {
       setState(() {
         _isProcessing = false;
@@ -201,7 +245,10 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
   }
 
   Future<void> _toggleFlash() async {
-    if (_cameraController?.value.isInitialized != true) return;
+    if (!_isCameraInitialized ||
+        _cameraController?.value.isInitialized != true) {
+      return;
+    }
 
     try {
       final newFlashMode = _isFlashOn ? FlashMode.off : FlashMode.torch;
@@ -210,7 +257,49 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
         _isFlashOn = !_isFlashOn;
       });
     } catch (e) {
-      _showErrorSnackBar('Failed to toggle flash: $e');
+      debugPrint('Flash toggle error: $e');
+      _showErrorSnackBar('Failed to toggle flash: ${e.toString()}');
+    }
+  }
+
+  Future<void> _switchCamera() async {
+    if (_cameras.length < 2 || _isProcessing) return;
+
+    setState(() {
+      _isProcessing = true;
+    });
+
+    try {
+      final currentCamera = _cameraController?.description;
+      final newCamera = _cameras.firstWhere(
+        (camera) => camera != currentCamera,
+      );
+
+      await _cameraController?.dispose();
+
+      _cameraController = CameraController(
+        newCamera,
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
+
+      await _cameraController!.initialize();
+
+      if (mounted) {
+        setState(() {
+          _isCameraInitialized = _cameraController!.value.isInitialized;
+        });
+      }
+    } catch (e) {
+      debugPrint('Camera switch error: $e');
+      _showErrorSnackBar('Failed to switch camera: ${e.toString()}');
+      // Try to reinitialize original camera
+      _initializeCamera();
+    } finally {
+      setState(() {
+        _isProcessing = false;
+      });
     }
   }
 
@@ -231,7 +320,7 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => PhotoTipsSheet(),
+      builder: (context) => const PhotoTipsSheet(),
     );
   }
 
@@ -243,21 +332,120 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
   }
 
   void _showErrorSnackBar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         backgroundColor: Theme.of(context).colorScheme.error,
         behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 4),
       ),
     );
   }
 
   void _showSuccessSnackBar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         backgroundColor: Colors.green,
         behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Widget _buildCameraPreview() {
+    if (_isInitializing) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(color: Colors.white),
+            SizedBox(height: 16),
+            Text(
+              'Initializing camera...',
+              style: TextStyle(color: Colors.white, fontSize: 16),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (!_isCameraInitialized ||
+        _cameraController?.value.isInitialized != true) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.camera_alt_outlined,
+              color: Colors.white,
+              size: 64,
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Camera not available',
+              style: TextStyle(color: Colors.white, fontSize: 18),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Please check camera permissions',
+              style: TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _initializeCamera,
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Safe access to camera controller
+    final controller = _cameraController!;
+    return AspectRatio(
+      aspectRatio: controller.value.aspectRatio,
+      child: Stack(
+        children: [
+          CameraPreview(controller),
+
+          // Flash overlay
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 100),
+            color: _overlayColor.withOpacity(0.3),
+          ),
+
+          // Face guide overlay
+          if (!_isProcessing)
+            CustomPaint(
+              painter: FaceGuidePainter(
+                isBabyMode: _isBabyMode,
+                color: Colors.white.withOpacity(0.8),
+              ),
+              size: Size.infinite,
+            ),
+
+          // Processing overlay
+          if (_isProcessing)
+            Container(
+              color: Colors.black.withOpacity(0.5),
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: Colors.white),
+                    SizedBox(height: 16),
+                    Text(
+                      'Processing photo...',
+                      style: TextStyle(color: Colors.white, fontSize: 16),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -286,120 +474,17 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
       body: Stack(
         children: [
           // Camera preview
-          if (_isCameraInitialized)
-            Positioned.fill(
-              child: AspectRatio(
-                aspectRatio: _cameraController!.value.aspectRatio,
-                child: Stack(
-                  children: [
-                    CameraPreview(_cameraController!),
-                    // Validation overlay
-                    if (_overlayColor != Colors.white)
-                      Container(color: _overlayColor),
-                  ],
-                ),
-              ),
-            )
-          else
-            const Center(child: CircularProgressIndicator(color: Colors.white)),
+          Positioned.fill(child: _buildCameraPreview()),
 
-          // Face guide overlay
-          if (_isCameraInitialized)
-            Positioned.fill(
-              child: CustomPaint(
-                painter: FaceGuidePainter(
-                  isBabyMode: _isBabyMode,
-                  color: Colors.white.withOpacity(0.8),
-                ),
-              ),
-            ),
-
-          // Requirements panel
+          // Requirements card
           if (_showRequirements)
             Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                color: Colors.black.withOpacity(0.8),
-                child: PhotoRequirementsCard(isBabyMode: _isBabyMode),
-              ),
-            ),
-
-          // Toggle requirements button
-          Positioned(
-            top: AppConstants.mediumSpacing,
-            right: AppConstants.mediumSpacing,
-            child: FloatingActionButton.small(
-              onPressed: _toggleRequirements,
-              backgroundColor: Colors.black.withOpacity(0.7),
-              child: Icon(
-                _showRequirements ? Icons.visibility_off : Icons.visibility,
-                color: Colors.white,
-              ),
-            ),
-          ),
-
-          // Baby mode toggle
-          Positioned(
-            top: AppConstants.mediumSpacing,
-            left: AppConstants.mediumSpacing,
-            child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppConstants.mediumSpacing,
-                vertical: AppConstants.smallSpacing,
-              ),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
-                borderRadius: BorderRadius.circular(AppConstants.largeRadius),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    Icons.child_care,
-                    color: _isBabyMode ? Colors.orange : Colors.white,
-                    size: AppConstants.mediumIconSize,
-                  ),
-                  const SizedBox(width: AppConstants.smallSpacing),
-                  Text(
-                    'Baby Mode',
-                    style: TextStyle(
-                      color: _isBabyMode ? Colors.orange : Colors.white,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(width: AppConstants.smallSpacing),
-                  Switch(
-                    value: _isBabyMode,
-                    onChanged: (_) => _toggleBabyMode(),
-                    activeColor: Colors.orange,
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          // Processing indicator
-          if (_isProcessing)
-            Container(
-              color: Colors.black.withOpacity(0.7),
-              child: const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(color: Colors.white),
-                    SizedBox(height: 16),
-                    Text(
-                      'Analyzing Photo...',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
+              top: 16,
+              left: 16,
+              right: 16,
+              child: PhotoRequirementsCard(
+                isBabyMode: _isBabyMode,
+                onClose: _toggleRequirements,
               ),
             ),
 
@@ -409,7 +494,12 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
             left: 0,
             right: 0,
             child: Container(
-              height: 120,
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(context).padding.bottom + 20,
+                top: 20,
+                left: 20,
+                right: 20,
+              ),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
@@ -417,63 +507,87 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
                   colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
                 ),
               ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  // Flash toggle
-                  _buildControlButton(
-                    icon: _isFlashOn ? Icons.flash_on : Icons.flash_off,
-                    onPressed: _toggleFlash,
-                    isActive: _isFlashOn,
-                  ),
+              child: SafeArea(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    // Flash toggle
+                    _buildControlButton(
+                      icon: _isFlashOn ? Icons.flash_on : Icons.flash_off,
+                      onPressed: _toggleFlash,
+                      isActive: _isFlashOn,
+                    ),
 
-                  // Gallery button
-                  _buildControlButton(
-                    icon: Icons.photo_library,
-                    onPressed: _pickFromGallery,
-                  ),
+                    // Gallery picker
+                    _buildControlButton(
+                      icon: Icons.photo_library,
+                      onPressed: _pickFromGallery,
+                    ),
 
-                  // Capture button
-                  GestureDetector(
-                    onTap: _isProcessing ? null : _capturePhoto,
-                    child: Container(
-                      width: 80,
-                      height: 80,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 4),
-                      ),
+                    // Capture button
+                    GestureDetector(
+                      onTap: _capturePhoto,
                       child: Container(
-                        margin: const EdgeInsets.all(8),
+                        width: 80,
+                        height: 80,
                         decoration: BoxDecoration(
-                          color: _isProcessing ? Colors.grey : Colors.white,
                           shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 4),
+                          color: _isProcessing
+                              ? Colors.grey
+                              : Colors.transparent,
                         ),
-                        child: _isProcessing
-                            ? const CircularProgressIndicator(
-                                color: Colors.black,
-                                strokeWidth: 2,
-                              )
-                            : null,
+                        child: Center(
+                          child: Container(
+                            width: 60,
+                            height: 60,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _isProcessing ? Colors.grey : Colors.white,
+                            ),
+                            child: _isProcessing
+                                ? const CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    valueColor: AlwaysStoppedAnimation(
+                                      Colors.black,
+                                    ),
+                                  )
+                                : null,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
 
-                  // Switch camera button
-                  _buildControlButton(
-                    icon: Icons.flip_camera_ios,
-                    onPressed: _switchCamera,
-                  ),
+                    // Camera switch
+                    _buildControlButton(
+                      icon: Icons.flip_camera_ios,
+                      onPressed: _cameras.length > 1 ? _switchCamera : null,
+                      isEnabled: _cameras.length > 1,
+                    ),
 
-                  // Saved photos button
-                  _buildControlButton(
-                    icon: Icons.folder,
-                    onPressed: _navigateToGallery,
-                  ),
-                ],
+                    // Baby mode toggle
+                    _buildControlButton(
+                      icon: Icons.child_care,
+                      onPressed: _toggleBabyMode,
+                      isActive: _isBabyMode,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
+
+          // Requirements toggle
+          if (!_showRequirements)
+            Positioned(
+              top: 16,
+              right: 16,
+              child: FloatingActionButton.small(
+                onPressed: _toggleRequirements,
+                backgroundColor: Colors.black.withOpacity(0.7),
+                child: const Icon(Icons.info_outline, color: Colors.white),
+              ),
+            ),
         ],
       ),
     );
@@ -481,50 +595,29 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
 
   Widget _buildControlButton({
     required IconData icon,
-    required VoidCallback onPressed,
+    required VoidCallback? onPressed,
     bool isActive = false,
+    bool isEnabled = true,
   }) {
     return Container(
       width: 56,
       height: 56,
       decoration: BoxDecoration(
-        color: isActive ? Colors.blue : Colors.black.withOpacity(0.5),
+        color: isActive
+            ? Colors.blue.withOpacity(0.8)
+            : Colors.black.withOpacity(0.5),
         shape: BoxShape.circle,
         border: Border.all(color: Colors.white.withOpacity(0.3), width: 1),
       ),
       child: IconButton(
-        onPressed: onPressed,
+        onPressed: isEnabled ? onPressed : null,
         icon: Icon(
           icon,
-          color: Colors.white,
-          size: AppConstants.mediumIconSize,
+          color: isEnabled ? Colors.white : Colors.grey,
+          size: 24,
         ),
       ),
     );
-  }
-
-  Future<void> _switchCamera() async {
-    if (_cameras.length < 2) return;
-
-    final currentCamera = _cameraController?.description;
-    final newCamera = _cameras.firstWhere((camera) => camera != currentCamera);
-
-    await _cameraController?.dispose();
-
-    _cameraController = CameraController(
-      newCamera,
-      ResolutionPreset.high,
-      enableAudio: false,
-    );
-
-    try {
-      await _cameraController!.initialize();
-      if (mounted) {
-        setState(() {});
-      }
-    } catch (e) {
-      _showErrorSnackBar('Failed to switch camera: $e');
-    }
   }
 }
 
@@ -555,7 +648,7 @@ class FaceGuidePainter extends CustomPainter {
     canvas.drawRect(rect, paint);
 
     // Draw corner guides
-    final cornerLength = 30.0;
+    const cornerLength = 30.0;
     final corners = [
       rect.topLeft,
       rect.topRight,
@@ -564,21 +657,38 @@ class FaceGuidePainter extends CustomPainter {
     ];
 
     for (final corner in corners) {
-      // Draw corner brackets
-      canvas.drawLine(corner, corner + Offset(cornerLength, 0), paint);
-      canvas.drawLine(corner, corner + Offset(0, cornerLength), paint);
+      // Top-left corner
+      if (corner == rect.topLeft) {
+        canvas.drawLine(corner, corner + const Offset(cornerLength, 0), paint);
+        canvas.drawLine(corner, corner + const Offset(0, cornerLength), paint);
+      }
+      // Top-right corner
+      else if (corner == rect.topRight) {
+        canvas.drawLine(corner, corner + const Offset(-cornerLength, 0), paint);
+        canvas.drawLine(corner, corner + const Offset(0, cornerLength), paint);
+      }
+      // Bottom-left corner
+      else if (corner == rect.bottomLeft) {
+        canvas.drawLine(corner, corner + const Offset(cornerLength, 0), paint);
+        canvas.drawLine(corner, corner + const Offset(0, -cornerLength), paint);
+      }
+      // Bottom-right corner
+      else if (corner == rect.bottomRight) {
+        canvas.drawLine(corner, corner + const Offset(-cornerLength, 0), paint);
+        canvas.drawLine(corner, corner + const Offset(0, -cornerLength), paint);
+      }
     }
 
     // Draw center crosshair
-    final crosshairSize = 20.0;
+    const crosshairSize = 20.0;
     canvas.drawLine(
-      center - Offset(crosshairSize / 2, 0),
-      center + Offset(crosshairSize / 2, 0),
+      center - const Offset(crosshairSize / 2, 0),
+      center + const Offset(crosshairSize / 2, 0),
       paint,
     );
     canvas.drawLine(
-      center - Offset(0, crosshairSize / 2),
-      center + Offset(0, crosshairSize / 2),
+      center - const Offset(0, crosshairSize / 2),
+      center + const Offset(0, crosshairSize / 2),
       paint,
     );
   }
@@ -606,15 +716,15 @@ class PhotoValidationSheet extends StatelessWidget {
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(AppConstants.largeRadius),
-          topRight: Radius.circular(AppConstants.largeRadius),
+          topLeft: Radius.circular(24),
+          topRight: Radius.circular(24),
         ),
       ),
       child: Column(
         children: [
-          // Handle
+          // Handle bar
           Container(
-            margin: const EdgeInsets.only(top: AppConstants.smallSpacing),
+            margin: const EdgeInsets.only(top: 12),
             width: 40,
             height: 4,
             decoration: BoxDecoration(
@@ -625,100 +735,56 @@ class PhotoValidationSheet extends StatelessWidget {
 
           // Header
           Padding(
-            padding: const EdgeInsets.all(AppConstants.mediumSpacing),
+            padding: const EdgeInsets.all(20),
             child: Row(
               children: [
                 Icon(
-                  Icons.warning,
+                  Icons.warning_amber_rounded,
                   color: Colors.orange,
-                  size: AppConstants.largeIconSize,
+                  size: 32,
                 ),
-                const SizedBox(width: AppConstants.mediumSpacing),
-                Text(
-                  'Photo Issues Detected',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    color: Colors.orange,
-                    fontWeight: FontWeight.bold,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Photo Needs Improvement',
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        'Please fix the issues below and retake',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
             ),
           ),
 
-          // Compliance score
-          Container(
-            margin: const EdgeInsets.symmetric(
-              horizontal: AppConstants.mediumSpacing,
-            ),
-            padding: const EdgeInsets.all(AppConstants.mediumSpacing),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  Colors.red.withOpacity(0.1),
-                  Colors.orange.withOpacity(0.1),
-                ],
-              ),
-              borderRadius: BorderRadius.circular(AppConstants.mediumRadius),
-            ),
-            child: Row(
-              children: [
-                CircularProgressIndicator(
-                  value: validationResult.complianceScore / 100,
-                  backgroundColor: Colors.grey[300],
-                  valueColor: AlwaysStoppedAnimation<Color>(
-                    validationResult.complianceScore > 70
-                        ? Colors.green
-                        : validationResult.complianceScore > 40
-                        ? Colors.orange
-                        : Colors.red,
-                  ),
-                ),
-                const SizedBox(width: AppConstants.mediumSpacing),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Compliance Score',
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    Text(
-                      '${validationResult.complianceScore.toInt()}%',
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.bold),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          // Error list
+          // Errors list
           Expanded(
             child: ListView.builder(
-              padding: const EdgeInsets.all(AppConstants.mediumSpacing),
+              padding: const EdgeInsets.symmetric(horizontal: 20),
               itemCount: validationResult.errors.length,
               itemBuilder: (context, index) {
                 final error = validationResult.errors[index];
                 return Container(
-                  margin: const EdgeInsets.only(
-                    bottom: AppConstants.smallSpacing,
-                  ),
-                  padding: const EdgeInsets.all(AppConstants.mediumSpacing),
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: Colors.red.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(
-                      AppConstants.smallRadius,
-                    ),
+                    borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.red.withOpacity(0.3)),
                   ),
                   child: Row(
                     children: [
-                      Icon(
-                        Icons.error_outline,
-                        color: Colors.red,
-                        size: AppConstants.mediumIconSize,
-                      ),
-                      const SizedBox(width: AppConstants.mediumSpacing),
+                      Icon(Icons.error_outline, color: Colors.red, size: 24),
+                      const SizedBox(width: 12),
                       Expanded(
                         child: Text(
                           error,
@@ -734,7 +800,11 @@ class PhotoValidationSheet extends StatelessWidget {
 
           // Action buttons
           Padding(
-            padding: const EdgeInsets.all(AppConstants.mediumSpacing),
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              bottom: MediaQuery.of(context).padding.bottom + 20,
+            ),
             child: Row(
               children: [
                 Expanded(
@@ -743,15 +813,22 @@ class PhotoValidationSheet extends StatelessWidget {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Theme.of(context).primaryColor,
                       padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
-                    child: const Text('Retake Photo'),
+                    child: const Text(
+                      'Retake Photo',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ),
               ],
             ),
           ),
-
-          SizedBox(height: MediaQuery.of(context).padding.bottom),
         ],
       ),
     );
@@ -759,6 +836,8 @@ class PhotoValidationSheet extends StatelessWidget {
 }
 
 class PhotoTipsSheet extends StatelessWidget {
+  const PhotoTipsSheet({Key? key}) : super(key: key);
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -766,15 +845,15 @@ class PhotoTipsSheet extends StatelessWidget {
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.only(
-          topLeft: Radius.circular(AppConstants.largeRadius),
-          topRight: Radius.circular(AppConstants.largeRadius),
+          topLeft: Radius.circular(24),
+          topRight: Radius.circular(24),
         ),
       ),
       child: Column(
         children: [
-          // Handle
+          // Handle bar
           Container(
-            margin: const EdgeInsets.only(top: AppConstants.smallSpacing),
+            margin: const EdgeInsets.only(top: 12),
             width: 40,
             height: 4,
             decoration: BoxDecoration(
@@ -785,20 +864,19 @@ class PhotoTipsSheet extends StatelessWidget {
 
           // Header
           Padding(
-            padding: const EdgeInsets.all(AppConstants.mediumSpacing),
+            padding: const EdgeInsets.all(20),
             child: Row(
               children: [
-                Icon(
-                  Icons.lightbulb_outline,
-                  color: Theme.of(context).primaryColor,
-                  size: AppConstants.largeIconSize,
+                Icon(Icons.lightbulb_outline, color: Colors.blue, size: 32),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Photo Tips for DV Application',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
-                const SizedBox(width: AppConstants.mediumSpacing),
-                Text(
-                  'Photo Tips',
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                const Spacer(),
                 IconButton(
                   onPressed: () => Navigator.pop(context),
                   icon: const Icon(Icons.close),
@@ -809,47 +887,53 @@ class PhotoTipsSheet extends StatelessWidget {
 
           // Tips content
           Expanded(
-            child: ListView(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppConstants.mediumSpacing,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildTipCard(
+                    icon: Icons.face,
+                    title: 'Face Requirements',
+                    tips: [
+                      'Look directly at the camera',
+                      'Keep a neutral expression',
+                      'Ensure your entire face is visible',
+                      'Face should occupy 50-70% of the frame',
+                    ],
+                  ),
+                  _buildTipCard(
+                    icon: Icons.wb_sunny,
+                    title: 'Lighting',
+                    tips: [
+                      'Use natural light when possible',
+                      'Avoid harsh shadows on face',
+                      'Ensure even lighting across face',
+                      'Avoid backlighting',
+                    ],
+                  ),
+                  _buildTipCard(
+                    icon: Icons.wallpaper,
+                    title: 'Background',
+                    tips: [
+                      'Use a plain white or light background',
+                      'Avoid patterns or textures',
+                      'Ensure good contrast with your clothing',
+                      'Remove any objects from background',
+                    ],
+                  ),
+                  _buildTipCard(
+                    icon: Icons.child_care,
+                    title: 'Baby Mode Tips',
+                    tips: [
+                      'Keep baby calm and comfortable',
+                      'Use soft, even lighting',
+                      'Ensure baby\'s eyes are open if possible',
+                      'Baby\'s head should be upright',
+                    ],
+                  ),
+                ],
               ),
-              children: [
-                _buildTipCard(
-                  icon: Icons.wb_sunny,
-                  title: 'Perfect Lighting',
-                  description:
-                      'Face the light source directly. Natural daylight works best. Avoid shadows on your face.',
-                  color: Colors.orange,
-                ),
-                _buildTipCard(
-                  icon: Icons.face,
-                  title: 'Proper Positioning',
-                  description:
-                      'Keep your head straight, look directly at the camera. Maintain a neutral expression.',
-                  color: Colors.blue,
-                ),
-                _buildTipCard(
-                  icon: Icons.crop_square,
-                  title: 'Background',
-                  description:
-                      'Use a plain white or off-white background. Ensure it\'s evenly lit without shadows.',
-                  color: Colors.green,
-                ),
-                _buildTipCard(
-                  icon: Icons.visibility,
-                  title: 'No Glasses',
-                  description:
-                      'Remove eyeglasses unless medically required. Ensure both eyes are clearly visible.',
-                  color: Colors.purple,
-                ),
-                _buildTipCard(
-                  icon: Icons.child_care,
-                  title: 'Baby Mode Tips',
-                  description:
-                      'For infants: Use natural light, keep baby calm, white sheet as background.',
-                  color: Colors.pink,
-                ),
-              ],
             ),
           ),
         ],
@@ -860,45 +944,56 @@ class PhotoTipsSheet extends StatelessWidget {
   Widget _buildTipCard({
     required IconData icon,
     required String title,
-    required String description,
-    required Color color,
+    required List<String> tips,
   }) {
     return Container(
-      margin: const EdgeInsets.only(bottom: AppConstants.mediumSpacing),
-      padding: const EdgeInsets.all(AppConstants.mediumSpacing),
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(AppConstants.mediumRadius),
-        border: Border.all(color: color.withOpacity(0.3)),
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[200]!),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 50,
-            height: 50,
-            decoration: BoxDecoration(
-              color: color,
-              borderRadius: BorderRadius.circular(AppConstants.smallRadius),
-            ),
-            child: Icon(icon, color: Colors.white),
+          Row(
+            children: [
+              Icon(icon, color: Colors.blue, size: 24),
+              const SizedBox(width: 12),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: AppConstants.mediumSpacing),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
+          const SizedBox(height: 12),
+          ...tips
+              .map(
+                (tip) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: const BoxDecoration(
+                          color: Colors.blue,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(tip, style: const TextStyle(fontSize: 14)),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(description, style: const TextStyle(fontSize: 14)),
-              ],
-            ),
-          ),
+              )
+              .toList(),
         ],
       ),
     );

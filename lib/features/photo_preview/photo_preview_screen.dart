@@ -48,7 +48,7 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen> {
 
       if (processedImage != null) {
         // Save the processed image
-        final bytes = img.encodeJpg(processedImage, quality: 95);
+        final bytes = img.encodeJpg(processedImage as img.Image, quality: 95);
         final tempDir = Directory.systemTemp;
         final tempPath =
             '${tempDir.path}/dv_processed_${DateTime.now().millisecondsSinceEpoch}.jpg';

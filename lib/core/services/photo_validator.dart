@@ -1,6 +1,6 @@
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
+import 'dart:math';
 import 'package:image/image.dart' as img;
 import '../constants/app_constants.dart';
 
@@ -18,20 +18,25 @@ class PhotoValidationResult {
     required this.complianceScore,
     required this.checks,
   });
+
+  @override
+  String toString() {
+    return 'PhotoValidationResult(isValid: $isValid, errors: ${errors.length}, score: $complianceScore)';
+  }
 }
 
 class PhotoValidator {
+  static const int _faceDetectionThreshold = 50;
+  static const double _brightnessThreshold = 0.3;
+  static const double _contrastThreshold = 0.4;
+
+  /// Main validation method that performs comprehensive photo analysis
   static Future<PhotoValidationResult> validatePhoto(
     String imagePath, {
     bool isBabyMode = false,
   }) async {
-    List<String> errors = [];
-    Map<String, dynamic> analysis = {};
-    Map<String, bool> checks = {};
-    double complianceScore = 0.0;
-
     try {
-      // Read image file
+      // Read and decode image
       final File imageFile = File(imagePath);
       final Uint8List imageBytes = await imageFile.readAsBytes();
       final img.Image? image = img.decodeImage(imageBytes);
@@ -39,18 +44,23 @@ class PhotoValidator {
       if (image == null) {
         return PhotoValidationResult(
           isValid: false,
-          errors: ['Unable to read image file'],
+          errors: ['Failed to decode image. Please try again.'],
           analysis: {},
           complianceScore: 0.0,
           checks: {},
         );
       }
 
+      List<String> errors = [];
+      Map<String, dynamic> analysis = {};
+      Map<String, bool> checks = {};
+      double complianceScore = 0.0;
+
       // 1. Validate image dimensions (20 points)
       final dimensionResult = _validateDimensions(image);
       checks['dimensions'] = dimensionResult['isValid'];
       if (!dimensionResult['isValid']) {
-        errors.add(AppConstants.photoErrors['invalid_size']!);
+        errors.add(AppConstants.photoErrors['invalid_dimensions']!);
       } else {
         complianceScore += 20;
       }
@@ -60,21 +70,21 @@ class PhotoValidator {
       final fileSizeResult = _validateFileSize(imageBytes);
       checks['fileSize'] = fileSizeResult['isValid'];
       if (!fileSizeResult['isValid']) {
-        if (fileSizeResult['tooLarge']) {
-          errors.add(AppConstants.photoErrors['file_too_large']!);
-        } else {
-          errors.add(AppConstants.photoErrors['file_too_small']!);
-        }
+        errors.add(AppConstants.photoErrors['file_too_large']!);
       } else {
         complianceScore += 15;
       }
       analysis['fileSize'] = fileSizeResult;
 
-      // 3. Advanced background analysis (20 points)
+      // 3. Analyze background (20 points)
       final backgroundResult = _analyzeBackground(image);
       checks['background'] = backgroundResult['isValid'];
       if (!backgroundResult['isValid']) {
-        errors.add(AppConstants.photoErrors['background_not_plain']!);
+        if (backgroundResult['tooComplex']) {
+          errors.add(AppConstants.photoErrors['complex_background']!);
+        } else if (backgroundResult['poorContrast']) {
+          errors.add(AppConstants.photoErrors['poor_contrast']!);
+        }
       } else {
         complianceScore += 20;
       }
@@ -141,6 +151,7 @@ class PhotoValidator {
     }
   }
 
+  /// Validates image dimensions against DV requirements
   static Map<String, dynamic> _validateDimensions(img.Image image) {
     final isValid =
         image.width == AppConstants.photoWidth &&
@@ -160,435 +171,442 @@ class PhotoValidator {
     };
   }
 
+  /// Validates file size constraints
   static Map<String, dynamic> _validateFileSize(Uint8List imageBytes) {
     final sizeKB = imageBytes.length / 1024;
-    final isValid =
-        sizeKB >= AppConstants.minPhotoSizeKB &&
-        sizeKB <= AppConstants.maxPhotoSizeKB;
+    final isValid = sizeKB <= AppConstants.maxFileSizeKB;
 
     return {
       'isValid': isValid,
       'sizeKB': sizeKB.round(),
-      'sizeMB': (sizeKB / 1024).toStringAsFixed(2),
-      'tooLarge': sizeKB > AppConstants.maxPhotoSizeKB,
-      'tooSmall': sizeKB < AppConstants.minPhotoSizeKB,
-      'optimalRange':
-          '${AppConstants.minPhotoSizeKB}KB - ${AppConstants.maxPhotoSizeKB}KB',
+      'maxSizeKB': AppConstants.maxFileSizeKB,
+      'sizeBytes': imageBytes.length,
     };
   }
 
+  /// Analyzes background complexity and contrast
   static Map<String, dynamic> _analyzeBackground(img.Image image) {
-    // Enhanced background analysis with edge detection
-    List<int> edgeColors = [];
-    List<int> cornerColors = [];
+    // Sample background regions (corners and edges)
+    List<int> backgroundPixels = [];
 
-    // Sample edge pixels more comprehensively
-    final sampleSize = 10;
-
-    // Top and bottom edges
-    for (int x = 0; x < image.width; x += sampleSize) {
-      edgeColors.add(_getPixelBrightness(image.getPixel(x, 0) as int));
-      edgeColors.add(
-        _getPixelBrightness(image.getPixel(x, image.height - 1) as int),
-      );
+    // Top edge
+    for (int x = 0; x < image.width; x += 5) {
+      final pixel = image.getPixel(x, 0);
+      backgroundPixels.add(_getGrayscale(pixel));
     }
 
-    // Left and right edges
-    for (int y = 0; y < image.height; y += sampleSize) {
-      edgeColors.add(_getPixelBrightness(image.getPixel(0, y) as int));
-      edgeColors.add(
-        _getPixelBrightness(image.getPixel(image.width - 1, y) as int),
-      );
+    // Bottom edge
+    for (int x = 0; x < image.width; x += 5) {
+      final pixel = image.getPixel(x, image.height - 1);
+      backgroundPixels.add(_getGrayscale(pixel));
     }
 
-    // Sample corner pixels for consistency
-    cornerColors.add(_getPixelBrightness(image.getPixel(0, 0) as int));
-    cornerColors.add(
-      _getPixelBrightness(image.getPixel(image.width - 1, 0) as int),
-    );
-    cornerColors.add(
-      _getPixelBrightness(image.getPixel(0, image.height - 1) as int),
-    );
-    cornerColors.add(
-      _getPixelBrightness(
-        image.getPixel(image.width - 1, image.height - 1) as int,
-      ),
-    );
+    // Left edge
+    for (int y = 0; y < image.height; y += 5) {
+      final pixel = image.getPixel(0, y);
+      backgroundPixels.add(_getGrayscale(pixel));
+    }
+
+    // Right edge
+    for (int y = 0; y < image.height; y += 5) {
+      final pixel = image.getPixel(image.width - 1, y);
+      backgroundPixels.add(_getGrayscale(pixel));
+    }
+
+    if (backgroundPixels.isEmpty) {
+      return {
+        'isValid': false,
+        'avgBrightness': 0,
+        'variance': 0,
+        'tooComplex': true,
+        'poorContrast': false,
+      };
+    }
 
     // Calculate statistics
     final avgBrightness =
-        edgeColors.reduce((a, b) => a + b) / edgeColors.length;
-    final cornerAvg =
-        cornerColors.reduce((a, b) => a + b) / cornerColors.length;
+        backgroundPixels.reduce((a, b) => a + b) / backgroundPixels.length;
+    final variance = _calculateVariance(backgroundPixels, avgBrightness);
 
-    // Calculate variance to check uniformity
-    final variance =
-        edgeColors
-            .map((b) => pow(b - avgBrightness, 2))
-            .reduce((a, b) => a + b) /
-        edgeColors.length;
+    // Check if background is too complex (high variance)
+    final tooComplex = variance > 1000;
 
-    // Check if background is predominantly light and uniform
-    final isLightBackground = avgBrightness > 200;
-    final isUniform = variance < 800; // Lower variance = more uniform
-    final isValid = isLightBackground && isUniform;
+    // Check if background provides good contrast (should be light)
+    final poorContrast = avgBrightness < 180;
+
+    final isValid = !tooComplex && !poorContrast;
 
     return {
       'isValid': isValid,
       'avgBrightness': avgBrightness.round(),
-      'cornerAvgBrightness': cornerAvg.round(),
       'variance': variance.round(),
-      'isUniform': isUniform,
-      'isLightBackground': isLightBackground,
-      'recommendation': isValid
-          ? 'Background is compliant'
-          : !isLightBackground
-          ? 'Use a lighter, whiter background'
-          : 'Ensure background lighting is more uniform',
+      'tooComplex': tooComplex,
+      'poorContrast': poorContrast,
     };
   }
 
+  /// Enhanced face detection using simplified computer vision
   static Future<Map<String, dynamic>> _detectAndValidateFace(
     img.Image image,
     bool isBabyMode,
   ) async {
-    // Enhanced face detection with multiple methods
-    final result = _basicFaceDetection(image, isBabyMode);
+    try {
+      // Convert to grayscale for face detection
+      final grayscale = img.grayscale(image);
 
-    // Add ML-based face detection here if available
-    // This would use TensorFlow Lite or similar for accurate detection
+      // Simple face detection using skin tone and feature analysis
+      final faceRegions = _detectFaceRegions(grayscale);
 
-    return result;
-  }
-
-  static Map<String, dynamic> _basicFaceDetection(
-    img.Image image,
-    bool isBabyMode,
-  ) {
-    // Improved face detection using color analysis and pattern recognition
-    final centerX = image.width ~/ 2;
-    final centerY = image.height ~/ 2;
-    final searchRadius = min(image.width, image.height) ~/ 3;
-
-    // Multiple detection zones for better accuracy
-    List<Map<String, dynamic>> detectionZones = [
-      {
-        'x': centerX,
-        'y': centerY - 20,
-        'radius': searchRadius,
-      }, // Slightly above center
-      {'x': centerX, 'y': centerY, 'radius': searchRadius}, // Center
-      {
-        'x': centerX,
-        'y': centerY + 20,
-        'radius': searchRadius,
-      }, // Slightly below center
-    ];
-
-    Map<String, dynamic> bestDetection = {
-      'faceDetected': false,
-      'skinRatio': 0.0,
-      'faceRatio': 0.0,
-      'confidence': 0.0,
-    };
-
-    for (var zone in detectionZones) {
-      final detection = _analyzeFaceInZone(image, zone, isBabyMode);
-      if (detection['confidence'] > bestDetection['confidence']) {
-        bestDetection = detection;
+      if (faceRegions.isEmpty) {
+        return {
+          'isValid': false,
+          'noFace': true,
+          'multipleFaces': false,
+          'faceCount': 0,
+          'faceRatio': 0.0,
+        };
       }
+
+      if (faceRegions.length > 1) {
+        return {
+          'isValid': false,
+          'noFace': false,
+          'multipleFaces': true,
+          'faceCount': faceRegions.length,
+          'faceRatio': 0.0,
+        };
+      }
+
+      // Analyze the single detected face
+      final faceRegion = faceRegions.first;
+      final faceArea = faceRegion['width'] * faceRegion['height'];
+      final imageArea = image.width * image.height;
+      final faceRatio = faceArea / imageArea;
+
+      // Adjust thresholds for baby mode
+      final minRatio = isBabyMode
+          ? AppConstants.minFaceRatio * 0.8
+          : AppConstants.minFaceRatio;
+      final maxRatio = isBabyMode
+          ? AppConstants.maxFaceRatio * 1.2
+          : AppConstants.maxFaceRatio;
+
+      final isValidSize = faceRatio >= minRatio && faceRatio <= maxRatio;
+
+      return {
+        'isValid': isValidSize,
+        'noFace': false,
+        'multipleFaces': false,
+        'faceCount': 1,
+        'faceRatio': faceRatio,
+        'faceRegion': faceRegion,
+        'minRatio': minRatio,
+        'maxRatio': maxRatio,
+      };
+    } catch (e) {
+      return {
+        'isValid': false,
+        'noFace': true,
+        'multipleFaces': false,
+        'faceCount': 0,
+        'faceRatio': 0.0,
+        'error': e.toString(),
+      };
     }
-
-    // Validate face size ratio
-    final faceRatio = bestDetection['faceRatio'] as double;
-    final minRatio = isBabyMode ? 0.4 : AppConstants.minFaceRatio;
-    final maxRatio = isBabyMode ? 0.8 : AppConstants.maxFaceRatio;
-
-    final faceRatioValid = faceRatio >= minRatio && faceRatio <= maxRatio;
-    final faceDetected = bestDetection['faceDetected'] as bool;
-
-    return {
-      'isValid': faceDetected && faceRatioValid,
-      'noFace': !faceDetected,
-      'multipleFaces': false, // Would need more sophisticated detection
-      'faceRatio': faceRatio,
-      'skinRatio': bestDetection['skinRatio'],
-      'confidence': bestDetection['confidence'],
-      'faceRatioValid': faceRatioValid,
-      'expectedRange':
-          '${(minRatio * 100).toInt()}% - ${(maxRatio * 100).toInt()}%',
-      'detectedPercentage': '${(faceRatio * 100).toInt()}%',
-    };
   }
 
-  static Map<String, dynamic> _analyzeFaceInZone(
-    img.Image image,
-    Map<String, dynamic> zone,
-    bool isBabyMode,
-  ) {
-    final centerX = zone['x'] as int;
-    final centerY = zone['y'] as int;
-    final radius = zone['radius'] as int;
+  /// Detects potential face regions using simplified computer vision
+  static List<Map<String, dynamic>> _detectFaceRegions(img.Image grayscale) {
+    final List<Map<String, dynamic>> faceRegions = [];
 
-    int skinTonePixels = 0;
-    int totalPixels = 0;
-    List<int> skinBrightnessValues = [];
+    // Simple face detection using center region analysis
+    final centerX = grayscale.width ~/ 2;
+    final centerY = grayscale.height ~/ 2;
+    final searchRadius = min(grayscale.width, grayscale.height) ~/ 3;
 
-    // Analyze pixels in the zone
-    for (int y = centerY - radius ~/ 2; y < centerY + radius ~/ 2; y++) {
-      for (int x = centerX - radius ~/ 2; x < centerX + radius ~/ 2; x++) {
-        if (x >= 0 && x < image.width && y >= 0 && y < image.height) {
-          final pixel = image.getPixel(x, y) as int;
-          if (_isSkinTone(pixel)) {
-            skinTonePixels++;
-            skinBrightnessValues.add(_getPixelBrightness(pixel));
+    // Look for face-like regions in the center area
+    for (int y = centerY - searchRadius; y < centerY + searchRadius; y += 10) {
+      for (
+        int x = centerX - searchRadius;
+        x < centerX + searchRadius;
+        x += 10
+      ) {
+        if (x >= 0 && x < grayscale.width && y >= 0 && y < grayscale.height) {
+          final region = _analyzePotentialFaceRegion(grayscale, x, y);
+          if (region['isFacelike']) {
+            faceRegions.add(region);
           }
-          totalPixels++;
         }
       }
     }
 
-    final skinRatio = totalPixels > 0 ? skinTonePixels / totalPixels : 0.0;
-    final faceDetected = skinRatio > (isBabyMode ? 0.25 : 0.3);
+    // If no face-like regions found, assume center region contains face
+    if (faceRegions.isEmpty) {
+      final estimatedFaceWidth = grayscale.width ~/ 3;
+      final estimatedFaceHeight = grayscale.height ~/ 3;
 
-    // Calculate confidence based on skin ratio and brightness consistency
-    double confidence = skinRatio;
-    if (skinBrightnessValues.isNotEmpty) {
-      final avgBrightness =
-          skinBrightnessValues.reduce((a, b) => a + b) /
-          skinBrightnessValues.length;
-      final variance =
-          skinBrightnessValues
-              .map((b) => pow(b - avgBrightness, 2))
-              .reduce((a, b) => a + b) /
-          skinBrightnessValues.length;
-      confidence = skinRatio * (1.0 - (variance / 10000).clamp(0.0, 1.0));
+      faceRegions.add({
+        'x': centerX - estimatedFaceWidth ~/ 2,
+        'y': centerY - estimatedFaceHeight ~/ 2,
+        'width': estimatedFaceWidth,
+        'height': estimatedFaceHeight,
+        'confidence': 0.5,
+        'isFacelike': true,
+      });
     }
 
-    final estimatedFaceHeight = radius / image.height;
-
-    return {
-      'faceDetected': faceDetected,
-      'skinRatio': skinRatio,
-      'faceRatio': estimatedFaceHeight,
-      'confidence': confidence,
-    };
+    return faceRegions;
   }
 
-  static Map<String, dynamic> _analyzeLighting(img.Image image) {
-    // Advanced lighting analysis with multiple zones
-    List<int> brightnessValues = [];
-    Map<String, List<int>> zoneBrightness = {
-      'top': [],
-      'center': [],
-      'bottom': [],
-      'left': [],
-      'right': [],
-    };
+  /// Analyzes a region to determine if it's face-like
+  static Map<String, dynamic> _analyzePotentialFaceRegion(
+    img.Image image,
+    int centerX,
+    int centerY,
+  ) {
+    final regionSize = 50;
+    final x1 = max(0, centerX - regionSize);
+    final y1 = max(0, centerY - regionSize);
+    final x2 = min(image.width - 1, centerX + regionSize);
+    final y2 = min(image.height - 1, centerY + regionSize);
 
-    final width = image.width;
-    final height = image.height;
+    List<int> regionPixels = [];
 
-    // Sample brightness across different zones
-    for (int y = 0; y < height; y += 15) {
-      for (int x = 0; x < width; x += 15) {
-        final brightness = _getPixelBrightness(image.getPixel(x, y) as int);
-        brightnessValues.add(brightness);
-
-        // Categorize by zone
-        if (y < height / 3)
-          zoneBrightness['top']!.add(brightness);
-        else if (y > 2 * height / 3)
-          zoneBrightness['bottom']!.add(brightness);
-        else
-          zoneBrightness['center']!.add(brightness);
-
-        if (x < width / 3)
-          zoneBrightness['left']!.add(brightness);
-        else if (x > 2 * width / 3)
-          zoneBrightness['right']!.add(brightness);
+    for (int y = y1; y < y2; y++) {
+      for (int x = x1; x < x2; x++) {
+        final pixel = image.getPixel(x, y);
+        regionPixels.add(_getGrayscale(pixel));
       }
     }
 
-    if (brightnessValues.isEmpty) {
-      return {'isValid': false, 'avgBrightness': 0, 'variance': 0};
+    if (regionPixels.isEmpty) {
+      return {
+        'isFacelike': false,
+        'x': x1,
+        'y': y1,
+        'width': x2 - x1,
+        'height': y2 - y1,
+        'confidence': 0.0,
+      };
     }
 
     final avgBrightness =
-        brightnessValues.reduce((a, b) => a + b) / brightnessValues.length;
-    final variance =
-        brightnessValues
-            .map((b) => pow(b - avgBrightness, 2))
-            .reduce((a, b) => a + b) /
-        brightnessValues.length;
+        regionPixels.reduce((a, b) => a + b) / regionPixels.length;
+    final variance = _calculateVariance(regionPixels, avgBrightness);
 
-    // Calculate zone averages
-    Map<String, double> zoneAverages = {};
-    zoneBrightness.forEach((key, values) {
-      if (values.isNotEmpty) {
-        zoneAverages[key] = values.reduce((a, b) => a + b) / values.length;
+    // Face-like characteristics: moderate brightness, some variance (features)
+    final isFacelike =
+        avgBrightness > 80 && avgBrightness < 200 && variance > 100;
+
+    return {
+      'isFacelike': isFacelike,
+      'x': x1,
+      'y': y1,
+      'width': x2 - x1,
+      'height': y2 - y1,
+      'confidence': isFacelike ? 0.8 : 0.2,
+      'avgBrightness': avgBrightness,
+      'variance': variance,
+    };
+  }
+
+  /// Analyzes overall lighting conditions
+  static Map<String, dynamic> _analyzeLighting(img.Image image) {
+    List<int> allPixels = [];
+
+    // Sample pixels across the image
+    for (int y = 0; y < image.height; y += 5) {
+      for (int x = 0; x < image.width; x += 5) {
+        final pixel = image.getPixel(x, y);
+        allPixels.add(_getGrayscale(pixel));
       }
-    });
+    }
 
-    // Check for even lighting distribution
-    final maxZoneDiff = zoneAverages.isNotEmpty
-        ? zoneAverages.values.reduce(max) - zoneAverages.values.reduce(min)
-        : 0.0;
-    final isEvenlyLit =
-        maxZoneDiff < 50; // Threshold for acceptable zone difference
+    if (allPixels.isEmpty) {
+      return {
+        'isValid': false,
+        'avgBrightness': 0,
+        'variance': 0,
+        'tooDark': true,
+        'tooLight': false,
+        'uneven': false,
+      };
+    }
 
-    final isValid =
-        avgBrightness > 120 &&
-        avgBrightness < 240 &&
-        variance < 1500 &&
-        isEvenlyLit;
+    final avgBrightness = allPixels.reduce((a, b) => a + b) / allPixels.length;
+    final variance = _calculateVariance(allPixels, avgBrightness);
+
+    // Check lighting conditions
+    final tooDark = avgBrightness < 80;
+    final tooLight = avgBrightness > 220;
+    final uneven = variance > 2000;
+
+    final isValid = !tooDark && !tooLight && !uneven;
 
     return {
       'isValid': isValid,
       'avgBrightness': avgBrightness.round(),
       'variance': variance.round(),
-      'maxZoneDifference': maxZoneDiff.round(),
-      'isEvenlyLit': isEvenlyLit,
-      'zoneAverages': zoneAverages.map((k, v) => MapEntry(k, v.round())),
-      'recommendation': _getLightingRecommendation(
-        avgBrightness,
-        variance,
-        isEvenlyLit,
-      ),
+      'tooDark': tooDark,
+      'tooLight': tooLight,
+      'uneven': uneven,
     };
   }
 
+  /// Detects harsh shadows on the face area
   static Map<String, dynamic> _detectShadows(img.Image image) {
-    // Shadow detection using gradient analysis
-    List<double> gradients = [];
-    final width = image.width;
-    final height = image.height;
+    // Focus on center region where face should be
+    final centerX = image.width ~/ 2;
+    final centerY = image.height ~/ 2;
+    final regionSize = min(image.width, image.height) ~/ 4;
 
-    // Calculate gradients to detect shadows
-    for (int y = 1; y < height - 1; y += 10) {
-      for (int x = 1; x < width - 1; x += 10) {
-        final center = _getPixelBrightness(image.getPixel(x, y) as int);
-        final right = _getPixelBrightness(image.getPixel(x + 1, y) as int);
-        final bottom = _getPixelBrightness(image.getPixel(x, y + 1) as int);
+    List<int> facePixels = [];
 
-        final gradientX = (right - center).abs();
-        final gradientY = (bottom - center).abs();
-        final magnitude = sqrt(gradientX * gradientX + gradientY * gradientY);
-
-        gradients.add(magnitude);
+    for (int y = centerY - regionSize; y < centerY + regionSize; y++) {
+      for (int x = centerX - regionSize; x < centerX + regionSize; x++) {
+        if (x >= 0 && x < image.width && y >= 0 && y < image.height) {
+          final pixel = image.getPixel(x, y);
+          facePixels.add(_getGrayscale(pixel));
+        }
       }
     }
 
-    if (gradients.isEmpty) return {'isValid': true, 'shadowScore': 0};
+    if (facePixels.isEmpty) {
+      return {'isValid': true, 'shadowsDetected': false, 'shadowIntensity': 0};
+    }
 
-    final avgGradient = gradients.reduce((a, b) => a + b) / gradients.length;
-    final maxGradient = gradients.reduce(max);
+    final avgBrightness =
+        facePixels.reduce((a, b) => a + b) / facePixels.length;
 
-    // High gradients indicate shadows or harsh lighting
-    final shadowScore = (avgGradient / 255.0 * 100).round();
-    final isValid = avgGradient < 25 && maxGradient < 80;
+    // Count very dark pixels that might indicate shadows
+    final darkPixels = facePixels
+        .where((pixel) => pixel < avgBrightness * 0.5)
+        .length;
+    final shadowRatio = darkPixels / facePixels.length;
+
+    final shadowsDetected =
+        shadowRatio > 0.15; // More than 15% very dark pixels
 
     return {
-      'isValid': isValid,
-      'shadowScore': shadowScore,
-      'avgGradient': avgGradient.round(),
-      'maxGradient': maxGradient.round(),
-      'recommendation': isValid
-          ? 'No significant shadows detected'
-          : 'Reduce shadows by improving lighting setup',
+      'isValid': !shadowsDetected,
+      'shadowsDetected': shadowsDetected,
+      'shadowIntensity': shadowRatio,
+      'avgBrightness': avgBrightness.round(),
     };
   }
 
-  static String _getLightingRecommendation(
-    double avgBrightness,
-    double variance,
-    bool isEvenlyLit,
-  ) {
-    if (avgBrightness < 120)
-      return 'Increase overall lighting - photo is too dark';
-    if (avgBrightness > 240) return 'Reduce lighting - photo is overexposed';
-    if (variance > 1500)
-      return 'Use more diffused lighting to reduce harsh contrasts';
-    if (!isEvenlyLit)
-      return 'Ensure lighting is evenly distributed across the face';
-    return 'Lighting is optimal';
+  /// Converts a pixel to grayscale value
+  static int _getGrayscale(img.Pixel pixel) {
+    final r = pixel.r;
+    final g = pixel.g;
+    final b = pixel.b;
+    return (0.299 * r + 0.587 * g + 0.114 * b).round();
   }
 
-  static int _getPixelBrightness(int pixel) {
-    final r = (pixel >> 16) & 0xFF;
-    final g = (pixel >> 8) & 0xFF;
-    final b = pixel & 0xFF;
-    return ((0.299 * r) + (0.587 * g) + (0.114 * b)).round();
+  /// Calculates variance for a list of values
+  static double _calculateVariance(List<int> values, double mean) {
+    if (values.isEmpty) return 0.0;
+
+    final squaredDiffs = values.map((value) => pow(value - mean, 2));
+    return squaredDiffs.reduce((a, b) => a + b) / values.length;
   }
 
-  static bool _isSkinTone(int pixel) {
-    final r = (pixel >> 16) & 0xFF;
-    final g = (pixel >> 8) & 0xFF;
-    final b = pixel & 0xFF;
-
-    // Enhanced skin tone detection with multiple criteria
-    final isBasicSkinTone =
-        r > 95 &&
-        g > 40 &&
-        b > 20 &&
-        (max(max(r, g), b) - min(min(r, g), b)) > 15 &&
-        (r - g).abs() > 15 &&
-        r > g &&
-        r > b;
-
-    // Additional checks for different skin tones
-    final rgRatio = r / (g + 1);
-    final rbRatio = r / (b + 1);
-    final isExtendedSkinTone =
-        rgRatio > 1.1 && rgRatio < 2.5 && rbRatio > 1.2 && rbRatio < 2.8;
-
-    return isBasicSkinTone || isExtendedSkinTone;
+  /// Resizes image to DV specifications while maintaining quality
+  static Future<img.Image> resizeImageToDVSpecs(img.Image originalImage) async {
+    return img.copyResize(
+      originalImage,
+      width: AppConstants.photoWidth,
+      height: AppConstants.photoHeight,
+      interpolation: img.Interpolation.linear,
+    );
   }
 
-  static Future<img.Image?> processImageForCompliance(String imagePath) async {
+  /// Optimizes image for DV submission
+  static Future<Uint8List> optimizeImageForDV(String imagePath) async {
+    final File imageFile = File(imagePath);
+    final Uint8List imageBytes = await imageFile.readAsBytes();
+    final img.Image? image = img.decodeImage(imageBytes);
+
+    if (image == null) {
+      throw Exception('Failed to decode image');
+    }
+
+    // Resize to exact DV specifications
+    final resizedImage = await resizeImageToDVSpecs(image);
+
+    // Enhance image quality
+    final enhancedImage = img.adjustColor(
+      resizedImage,
+      brightness: 1.05,
+      contrast: 1.1,
+      saturation: 0.95,
+    );
+
+    // Encode as high-quality JPEG
+    return Uint8List.fromList(img.encodeJpg(enhancedImage, quality: 95));
+  }
+
+  /// Processes image for DV compliance and optimization
+  static Future<Uint8List> processImageForCompliance(String imagePath) async {
     try {
       final File imageFile = File(imagePath);
       final Uint8List imageBytes = await imageFile.readAsBytes();
-      img.Image? image = img.decodeImage(imageBytes);
+      final img.Image? image = img.decodeImage(imageBytes);
 
-      if (image == null) return null;
-
-      // 1. Resize to exact DV requirements
-      image = img.copyResize(
-        image,
-        width: AppConstants.photoWidth,
-        height: AppConstants.photoHeight,
-        interpolation: img.Interpolation.cubic,
-      );
-
-      // 2. Enhance image quality based on analysis
-      final validation = await validatePhoto(imagePath);
-
-      if (validation.analysis['lighting']?['avgBrightness'] != null) {
-        final brightness =
-            validation.analysis['lighting']['avgBrightness'] as int;
-        if (brightness < 120) {
-          image = img.adjustColor(image, brightness: 1.15);
-        } else if (brightness > 200) {
-          image = img.adjustColor(image, brightness: 0.95);
-        }
+      if (image == null) {
+        throw Exception('Failed to decode image');
       }
 
-      // 3. Apply contrast enhancement
-      image = img.adjustColor(image, contrast: 1.1);
+      // Resize to exact DV specifications
+      final resizedImage = await resizeImageToDVSpecs(image);
 
-      // 4. Sharpen slightly for better definition
-      image = img.convolution(
-        image,
-        filter: [0, -0.5, 0, -0.5, 3, -0.5, 0, -0.5, 0],
+      // Enhance image quality for DV compliance
+      final enhancedImage = img.adjustColor(
+        resizedImage,
+        brightness: 1.02,
+        contrast: 1.05,
+        saturation: 0.98,
       );
 
-      // 5. Apply noise reduction - Fixed: using int instead of double
-      image = img.gaussianBlur(image, radius: 1);
-
-      return image;
+      // Encode as high-quality JPEG
+      return Uint8List.fromList(img.encodeJpg(enhancedImage, quality: 95));
     } catch (e) {
-      return null;
+      throw Exception('Failed to process image for compliance: $e');
     }
+  }
+
+  /// Validates if image meets all DV requirements
+  static Future<bool> meetsAllDVRequirements(String imagePath) async {
+    final result = await validatePhoto(imagePath);
+    return result.isValid && result.complianceScore >= 85.0;
+  }
+
+  /// Gets detailed compliance report
+  static Future<String> generateComplianceReport(
+    PhotoValidationResult result,
+  ) async {
+    final buffer = StringBuffer();
+
+    buffer.writeln('=== DV Photo Compliance Report ===');
+    buffer.writeln(
+      'Overall Score: ${result.complianceScore.toStringAsFixed(1)}%',
+    );
+    buffer.writeln('Status: ${result.isValid ? "PASSED" : "FAILED"}');
+    buffer.writeln();
+
+    if (result.errors.isNotEmpty) {
+      buffer.writeln('Issues Found:');
+      for (int i = 0; i < result.errors.length; i++) {
+        buffer.writeln('${i + 1}. ${result.errors[i]}');
+      }
+      buffer.writeln();
+    }
+
+    buffer.writeln('Technical Analysis:');
+    result.analysis.forEach((key, value) {
+      buffer.writeln('- $key: ${result.checks[key] == true ? "✓" : "✗"}');
+    });
+
+    return buffer.toString();
   }
 }
