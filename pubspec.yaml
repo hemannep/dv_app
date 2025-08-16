@@ -50,6 +50,8 @@ dependencies:
   # Added for local storage (required for settings persistence)
   shared_preferences: ^2.2.2
   path_provider: ^2.1.1
+  permission_handler: ^12.0.1
+  tflite_flutter: ^0.11.0
 
 dev_dependencies:
   flutter_test:
