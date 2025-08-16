@@ -156,11 +156,17 @@ class PhotoValidator {
     List<int> cornerColors = [];
 
     // Sample corner pixels
-    cornerColors.add(_getPixelBrightness(image.getPixel(0, 0)));
-    cornerColors.add(_getPixelBrightness(image.getPixel(image.width - 1, 0)));
-    cornerColors.add(_getPixelBrightness(image.getPixel(0, image.height - 1)));
+    cornerColors.add(_getPixelBrightness(image.getPixel(0, 0) as int));
     cornerColors.add(
-      _getPixelBrightness(image.getPixel(image.width - 1, image.height - 1)),
+      _getPixelBrightness(image.getPixel(image.width - 1, 0) as int),
+    );
+    cornerColors.add(
+      _getPixelBrightness(image.getPixel(0, image.height - 1) as int),
+    );
+    cornerColors.add(
+      _getPixelBrightness(
+        image.getPixel(image.width - 1, image.height - 1) as int,
+      ),
     );
 
     // Check if background is predominantly light (white/off-white)
@@ -203,7 +209,7 @@ class PhotoValidator {
       ) {
         if (x >= 0 && x < image.width && y >= 0 && y < image.height) {
           final pixel = image.getPixel(x, y);
-          if (_isSkinTone(pixel)) {
+          if (_isSkinTone(pixel as int)) {
             skinTonePixels++;
           }
           totalPixels++;
@@ -238,7 +244,7 @@ class PhotoValidator {
     // Sample brightness across the image
     for (int y = 0; y < image.height; y += 10) {
       for (int x = 0; x < image.width; x += 10) {
-        brightnessValues.add(_getPixelBrightness(image.getPixel(x, y)));
+        brightnessValues.add(_getPixelBrightness(image.getPixel(x, y) as int));
       }
     }
 

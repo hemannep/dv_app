@@ -188,7 +188,7 @@ class PhotoGalleryService {
     );
 
     // 3. Sharpen the image slightly
-    image = img.convolution(image, [0, -1, 0, -1, 5, -1, 0, -1, 0]);
+    image = img.convolution(image, filter: [0, -1, 0, -1, 5, -1, 0, -1, 0]);
 
     return image;
   }
