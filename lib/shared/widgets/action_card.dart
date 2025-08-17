@@ -11,7 +11,7 @@ class ActionCard extends StatelessWidget {
   final Color? backgroundColor;
 
   const ActionCard({
-    Key? key,
+    super.key,
     required this.icon,
     required this.title,
     required this.subtitle,
@@ -19,7 +19,7 @@ class ActionCard extends StatelessWidget {
     required this.onTap,
     this.gradient,
     this.backgroundColor,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

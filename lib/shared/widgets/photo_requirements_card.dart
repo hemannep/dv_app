@@ -6,10 +6,10 @@ class PhotoRequirementsCard extends StatefulWidget {
   final VoidCallback? onClose;
 
   const PhotoRequirementsCard({
-    Key? key,
+    super.key,
     required this.isBabyMode,
     this.onClose,
-  }) : super(key: key);
+  });
 
   @override
   State<PhotoRequirementsCard> createState() => _PhotoRequirementsCardState();
@@ -401,38 +401,36 @@ class _PhotoRequirementsCardState extends State<PhotoRequirementsCard>
         const SizedBox(height: 12),
 
         // Section items
-        ...items
-            .map(
-              (item) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      margin: const EdgeInsets.only(top: 6),
-                      width: 4,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: color.withOpacity(0.8),
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        item,
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.9),
-                          fontSize: 14,
-                          height: 1.3,
-                        ),
-                      ),
-                    ),
-                  ],
+        ...items.map(
+          (item) => Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  margin: const EdgeInsets.only(top: 6),
+                  width: 4,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: color.withOpacity(0.8),
+                    shape: BoxShape.circle,
+                  ),
                 ),
-              ),
-            )
-            .toList(),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    item,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.9),
+                      fontSize: 14,
+                      height: 1.3,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -494,8 +492,7 @@ class _PhotoRequirementsCardState extends State<PhotoRequirementsCard>
 class PhotoTipsBottomSheet extends StatelessWidget {
   final bool isBabyMode;
 
-  const PhotoTipsBottomSheet({Key? key, required this.isBabyMode})
-    : super(key: key);
+  const PhotoTipsBottomSheet({super.key, required this.isBabyMode});
 
   @override
   Widget build(BuildContext context) {
@@ -646,29 +643,27 @@ class PhotoTipsBottomSheet extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          ...tips
-              .map(
-                (tip) => Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: color,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(tip, style: const TextStyle(fontSize: 14)),
-                      ),
-                    ],
+          ...tips.map(
+            (tip) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                    ),
                   ),
-                ),
-              )
-              .toList(),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(tip, style: const TextStyle(fontSize: 14)),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -678,8 +673,7 @@ class PhotoTipsBottomSheet extends StatelessWidget {
 class PhotoExamplesBottomSheet extends StatelessWidget {
   final bool isBabyMode;
 
-  const PhotoExamplesBottomSheet({Key? key, required this.isBabyMode})
-    : super(key: key);
+  const PhotoExamplesBottomSheet({super.key, required this.isBabyMode});
 
   @override
   Widget build(BuildContext context) {
@@ -845,31 +839,26 @@ class PhotoExamplesBottomSheet extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 16),
-        ...examples
-            .map(
-              (example) => Container(
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: color.withOpacity(0.3)),
+        ...examples.map(
+          (example) => Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: color.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: color.withOpacity(0.3)),
+            ),
+            child: Row(
+              children: [
+                Icon(icon, color: color, size: 20),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(example, style: const TextStyle(fontSize: 14)),
                 ),
-                child: Row(
-                  children: [
-                    Icon(icon, color: color, size: 20),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        example,
-                        style: const TextStyle(fontSize: 14),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            )
-            .toList(),
+              ],
+            ),
+          ),
+        ),
       ],
     );
   }

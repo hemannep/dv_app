@@ -1,475 +1,512 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+// lib/screens/photo_preview_screen.dart
+
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:dvapp/core/services/photo_validator_service.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../widgets/photo_error_card.dart';
+import '../widgets/compliance_meter.dart';
+import '../widgets/photo_guide_overlay.dart';
 import 'package:image/image.dart' as img;
-import 'package:image_picker/image_picker.dart';
-import '../../core/constants/app_constants.dart';
-import '../../core/services/photo_validator.dart';
-import '../../core/services/photo_galary_service.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:gal/gal.dart';
 
 class PhotoPreviewScreen extends StatefulWidget {
   final String imagePath;
   final bool isBabyMode;
-  final PhotoValidationResult validationResult;
 
   const PhotoPreviewScreen({
     Key? key,
     required this.imagePath,
-    required this.isBabyMode,
-    required this.validationResult,
+    this.isBabyMode = false,
   }) : super(key: key);
 
   @override
   State<PhotoPreviewScreen> createState() => _PhotoPreviewScreenState();
 }
 
-class _PhotoPreviewScreenState extends State<PhotoPreviewScreen> {
-  bool _isProcessing = false;
-  bool _showAnalysis = false;
-  String? _processedImagePath;
+class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
+    with SingleTickerProviderStateMixin {
+  bool _isValidating = true;
+  PhotoValidationResult? _validationResult;
+  late AnimationController _animationController;
+  late Animation<double> _fadeAnimation;
+  bool _showGuideLines = true;
+  bool _showErrors = true;
 
   @override
   void initState() {
     super.initState();
-    _processImageForDV();
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 500),
+      vsync: this,
+    );
+    _fadeAnimation = CurvedAnimation(
+      parent: _animationController,
+      curve: Curves.easeInOut,
+    );
+    _validatePhoto();
   }
 
-  Future<void> _processImageForDV() async {
-    setState(() {
-      _isProcessing = true;
-    });
+  Future<void> _validatePhoto() async {
+    setState(() => _isValidating = true);
 
-    try {
-      // Process the image to make it DV compliant
-      final processedImage = await PhotoValidator.processImageForCompliance(
-        widget.imagePath,
-      );
-
-      if (processedImage != null) {
-        // Save the processed image
-        final bytes = img.encodeJpg(processedImage as img.Image, quality: 95);
-        final tempDir = Directory.systemTemp;
-        final tempPath =
-            '${tempDir.path}/dv_processed_${DateTime.now().millisecondsSinceEpoch}.jpg';
-
-        final file = File(tempPath);
-        await file.writeAsBytes(bytes);
-
-        setState(() {
-          _processedImagePath = tempPath;
-        });
-      }
-    } catch (e) {
-      _showErrorSnackBar('Failed to process image: $e');
-    } finally {
-      setState(() {
-        _isProcessing = false;
-      });
-    }
-  }
-
-  Future<void> _savePhoto() async {
-    if (_processedImagePath == null) {
-      _showErrorSnackBar('No processed image available');
-      return;
-    }
+    final result = await PhotoValidatorService.validatePhoto(
+      widget.imagePath,
+      isBabyMode: widget.isBabyMode,
+    );
 
     setState(() {
-      _isProcessing = true;
+      _validationResult = result;
+      _isValidating = false;
     });
 
+    _animationController.forward();
+
+    // Vibrate if errors found
+    if (result.errors.isNotEmpty) {
+      HapticFeedback.mediumImpact();
+    }
+  }
+
+  Future<void> _saveToGallery() async {
     try {
-      // Save to app directory
-      final savedPath = await PhotoGalleryService.saveImageToAppDirectory(
-        _processedImagePath!,
-        customName: 'dv_photo_${DateTime.now().millisecondsSinceEpoch}.jpg',
-      );
+      // Request permissions
+      if (!await Gal.hasAccess()) {
+        await Gal.requestAccess();
+      }
 
-      if (savedPath != null) {
-        // Try to save to device gallery as well
-        await PhotoGalleryService.exportToDeviceGallery(savedPath);
+      // Save to gallery using gal package
+      await Gal.putImage(widget.imagePath);
 
-        _showSuccessSnackBar('Photo saved successfully!');
-        Navigator.pop(context, 'saved');
-      } else {
-        _showErrorSnackBar('Failed to save photo');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Photo saved to gallery'),
+            backgroundColor: Colors.green,
+          ),
+        );
       }
     } catch (e) {
-      _showErrorSnackBar('Failed to save photo: $e');
-    } finally {
-      setState(() {
-        _isProcessing = false;
-      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to save photo: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
-  Future<void> _sharePhoto() async {
-    if (_processedImagePath == null) {
-      _showErrorSnackBar('No processed image available');
-      return;
-    }
+  void _retakePhoto() {
+    Navigator.pop(context, 'retake');
+  }
 
-    try {
-      // Copy to clipboard message
-      await Clipboard.setData(
-        const ClipboardData(text: 'DV compliant photo processed successfully'),
-      );
-      _showSuccessSnackBar('Photo path copied to clipboard');
-    } catch (e) {
-      _showErrorSnackBar('Failed to share photo: $e');
+  void _acceptPhoto() {
+    if (_validationResult?.isValid ?? false) {
+      Navigator.pop(context, 'accept');
+    } else {
+      _showConfirmationDialog();
     }
   }
 
-  void _showErrorSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Theme.of(context).colorScheme.error,
-        behavior: SnackBarBehavior.floating,
-      ),
+  void _showConfirmationDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber, color: Colors.orange, size: 28),
+              SizedBox(width: 12),
+              Text('Photo Has Issues'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Your photo has ${_validationResult?.errors.length ?? 0} issue(s) that may cause rejection.',
+                style: const TextStyle(fontSize: 16),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Are you sure you want to continue with this photo?',
+                style: TextStyle(fontSize: 14, color: Colors.grey),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.pop(context, 'accept');
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+              child: const Text('Continue Anyway'),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  void _showSuccessSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.green,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        title: const Text('Photo Preview'),
-        actions: [
-          IconButton(
-            onPressed: () {
-              setState(() {
-                _showAnalysis = !_showAnalysis;
-              });
-            },
-            icon: Icon(_showAnalysis ? Icons.visibility_off : Icons.analytics),
-            tooltip: 'Analysis',
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          // Photo display
-          Expanded(
-            child: Container(
-              width: double.infinity,
-              margin: const EdgeInsets.all(AppConstants.mediumSpacing),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(AppConstants.mediumRadius),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.white.withOpacity(0.1),
-                    blurRadius: 10,
-                    spreadRadius: 2,
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(AppConstants.mediumRadius),
-                child: Stack(
-                  children: [
-                    // Main image
-                    Image.file(
-                      File(_processedImagePath ?? widget.imagePath),
-                      fit: BoxFit.contain,
-                      width: double.infinity,
-                      height: double.infinity,
-                    ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            // Header
+            _buildHeader(),
 
-                    // Processing overlay
-                    if (_isProcessing)
-                      Container(
-                        color: Colors.black.withOpacity(0.7),
-                        child: const Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              CircularProgressIndicator(color: Colors.white),
-                              SizedBox(height: 16),
-                              Text(
-                                'Processing...',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                ),
+            // Photo with overlay
+            Expanded(
+              child: Stack(
+                children: [
+                  // Photo
+                  Center(
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        // Original photo
+                        Container(
+                          margin: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.3),
+                                blurRadius: 20,
+                                offset: const Offset(0, 10),
                               ),
                             ],
                           ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: Image.file(
+                              File(widget.imagePath),
+                              fit: BoxFit.contain,
+                            ),
+                          ),
                         ),
-                      ),
 
-                    // Image dimensions overlay
-                    Positioned(
-                      top: AppConstants.mediumSpacing,
-                      left: AppConstants.mediumSpacing,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: AppConstants.mediumSpacing,
-                          vertical: AppConstants.smallSpacing,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.green,
-                          borderRadius: BorderRadius.circular(
-                            AppConstants.smallRadius,
+                        // Guide overlay
+                        if (_showGuideLines && !_isValidating)
+                          PhotoGuideOverlay(
+                            showGuides: _showGuideLines,
+                            validationResult: _validationResult,
+                            isBabyMode: widget.isBabyMode,
                           ),
-                        ),
-                        child: const Text(
-                          '600 x 600 px',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
+                      ],
+                    ),
+                  ),
+
+                  // Loading overlay
+                  if (_isValidating)
+                    Container(
+                      color: Colors.black54,
+                      child: const Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 3,
+                            ),
+                            SizedBox(height: 20),
+                            Text(
+                              'Analyzing photo...',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
+                ],
+              ),
+            ),
 
-                    // Compliance score
-                    Positioned(
-                      top: AppConstants.mediumSpacing,
-                      right: AppConstants.mediumSpacing,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: AppConstants.mediumSpacing,
-                          vertical: AppConstants.smallSpacing,
-                        ),
-                        decoration: BoxDecoration(
-                          color: widget.validationResult.complianceScore > 80
-                              ? Colors.green
-                              : widget.validationResult.complianceScore > 60
-                              ? Colors.orange
-                              : Colors.red,
-                          borderRadius: BorderRadius.circular(
-                            AppConstants.smallRadius,
-                          ),
-                        ),
-                        child: Text(
-                          '${widget.validationResult.complianceScore.toInt()}% DV Compliant',
+            // Validation results
+            if (!_isValidating && _validationResult != null)
+              _buildValidationResults(),
+
+            // Action buttons
+            _buildActionButtons(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[900],
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+          ),
+          Expanded(
+            child: Text(
+              'DV Photo Tool',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w500,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          Row(
+            children: [
+              IconButton(
+                onPressed: () {
+                  setState(() => _showGuideLines = !_showGuideLines);
+                },
+                icon: Icon(
+                  _showGuideLines ? Icons.grid_on : Icons.grid_off,
+                  color: Colors.white,
+                ),
+                tooltip: 'Toggle guide lines',
+              ),
+              IconButton(
+                onPressed: _saveToGallery,
+                icon: const Icon(Icons.save_alt, color: Colors.white),
+                tooltip: 'Save to gallery',
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildValidationResults() {
+    if (_validationResult == null) return const SizedBox.shrink();
+
+    return FadeTransition(
+      opacity: _fadeAnimation,
+      child: Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.of(context).size.height * 0.35,
+        ),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.1),
+              blurRadius: 10,
+              offset: const Offset(0, -5),
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+
+            // Status header
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                children: [
+                  Icon(
+                    _validationResult!.isValid
+                        ? Icons.check_circle
+                        : Icons.warning_amber,
+                    color: _validationResult!.isValid
+                        ? Colors.green
+                        : Colors.orange,
+                    size: 32,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _validationResult!.isValid
+                              ? 'Photo Looks Good!'
+                              : 'Photo Needs Improvement',
                           style: const TextStyle(
-                            color: Colors.white,
+                            fontSize: 20,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
+                        if (!_validationResult!.isValid)
+                          Text(
+                            'Please fix the issues below and retake',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Compliance meter
+            if (!_validationResult!.isValid)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: ComplianceMeter(
+                  score: _validationResult!.complianceScore,
+                  animate: true,
+                ),
+              ),
+
+            // Error list
+            if (_validationResult!.errors.isNotEmpty && _showErrors)
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+                  itemCount: _validationResult!.errors.length,
+                  itemBuilder: (context, index) {
+                    return PhotoErrorCard(
+                      error: _validationResult!.errors[index],
+                      index: index,
+                    );
+                  },
+                ),
+              ),
+
+            // Success message
+            if (_validationResult!.isValid)
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  children: [
+                    const Icon(
+                      Icons.check_circle_outline,
+                      color: Colors.green,
+                      size: 64,
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Your photo meets all DV requirements!',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w500,
                       ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Compliance Score: ${_validationResult!.complianceScore.toStringAsFixed(0)}%',
+                      style: TextStyle(fontSize: 16, color: Colors.grey[600]),
                     ),
                   ],
                 ),
               ),
-            ),
-          ),
-
-          // Analysis panel
-          if (_showAnalysis)
-            Container(
-              margin: const EdgeInsets.all(AppConstants.mediumSpacing),
-              padding: const EdgeInsets.all(AppConstants.mediumSpacing),
-              decoration: BoxDecoration(
-                color: Colors.grey[900],
-                borderRadius: BorderRadius.circular(AppConstants.mediumRadius),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Analysis Results',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: AppConstants.mediumSpacing),
-
-                  // Analysis details
-                  _buildAnalysisRow(
-                    'Dimensions',
-                    '${widget.validationResult.analysis['dimensions']?['width'] ?? 'Unknown'} x ${widget.validationResult.analysis['dimensions']?['height'] ?? 'Unknown'} px',
-                    widget
-                            .validationResult
-                            .analysis['dimensions']?['isValid'] ==
-                        true,
-                  ),
-
-                  _buildAnalysisRow(
-                    'File Size',
-                    '${widget.validationResult.analysis['fileSize']?['sizeKB'] ?? 'Unknown'} KB',
-                    widget.validationResult.analysis['fileSize']?['isValid'] ==
-                        true,
-                  ),
-
-                  _buildAnalysisRow(
-                    'Background',
-                    'Brightness: ${widget.validationResult.analysis['background']?['avgBrightness'] ?? 'Unknown'}',
-                    widget
-                            .validationResult
-                            .analysis['background']?['isValid'] ==
-                        true,
-                  ),
-
-                  _buildAnalysisRow(
-                    'Face Detection',
-                    'Ratio: ${((widget.validationResult.analysis['face']?['faceRatio'] ?? 0.0) * 100).toInt()}%',
-                    widget.validationResult.analysis['face']?['isValid'] ==
-                        true,
-                  ),
-
-                  _buildAnalysisRow(
-                    'Lighting',
-                    'Avg: ${widget.validationResult.analysis['lighting']?['avgBrightness'] ?? 'Unknown'}',
-                    widget.validationResult.analysis['lighting']?['isValid'] ==
-                        true,
-                  ),
-                ],
-              ),
-            ),
-
-          // Specifications card
-          Container(
-            margin: const EdgeInsets.all(AppConstants.mediumSpacing),
-            padding: const EdgeInsets.all(AppConstants.mediumSpacing),
-            decoration: BoxDecoration(
-              color: Colors.grey[900],
-              borderRadius: BorderRadius.circular(AppConstants.mediumRadius),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'DV Photo Specifications',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: AppConstants.smallSpacing),
-
-                _buildSpecRow('Format', 'JPEG'),
-                _buildSpecRow('Dimensions', '600 x 600 pixels'),
-                _buildSpecRow('File Size', '10KB - 240KB'),
-                _buildSpecRow('Head Size', '50% - 69% of image height'),
-                _buildSpecRow('Background', 'Plain white or off-white'),
-
-                if (widget.isBabyMode) ...[
-                  const SizedBox(height: AppConstants.smallSpacing),
-                  Text(
-                    'Baby Mode Active',
-                    style: TextStyle(
-                      color: Colors.orange,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-
-          // Action buttons
-          Container(
-            padding: const EdgeInsets.all(AppConstants.mediumSpacing),
-            child: Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.camera_alt),
-                    label: const Text('Retake'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: Colors.white),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: AppConstants.mediumSpacing),
-
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _isProcessing ? null : _savePhoto,
-                    icon: _isProcessing
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Icon(Icons.save),
-                    label: Text(_isProcessing ? 'Saving...' : 'Save Photo'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          SizedBox(height: MediaQuery.of(context).padding.bottom),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildAnalysisRow(String label, String value, bool isValid) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        children: [
-          Icon(
-            isValid ? Icons.check_circle : Icons.error,
-            color: isValid ? Colors.green : Colors.red,
-            size: 16,
-          ),
-          const SizedBox(width: AppConstants.smallSpacing),
-          Text(
-            '$label:',
-            style: const TextStyle(color: Colors.white70, fontSize: 14),
-          ),
-          const SizedBox(width: AppConstants.smallSpacing),
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-            ),
+  Widget _buildActionButtons() {
+    final hasErrors = _validationResult?.errors.isNotEmpty ?? false;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, -2),
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildSpecRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            label,
-            style: const TextStyle(color: Colors.white70, fontSize: 14),
+          Expanded(
+            child: OutlinedButton(
+              onPressed: _retakePhoto,
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                side: BorderSide(
+                  color: hasErrors ? Colors.blue : Colors.grey,
+                  width: 2,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+              child: Text(
+                'Retake',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: hasErrors ? Colors.blue : Colors.grey[700],
+                ),
+              ),
+            ),
           ),
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
+          const SizedBox(width: 16),
+          Expanded(
+            flex: 2,
+            child: ElevatedButton(
+              onPressed: _isValidating ? null : _acceptPhoto,
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                backgroundColor: hasErrors ? Colors.orange : Colors.blue,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                elevation: 3,
+              ),
+              child: Text(
+                hasErrors ? 'Accept' : 'Accept',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
             ),
           ),
         ],

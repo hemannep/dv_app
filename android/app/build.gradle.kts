@@ -39,6 +39,28 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Add packaging options to resolve native library conflicts
+    packaging {
+        jniLibs {
+            pickFirsts.add("**/libc++_shared.so")
+            pickFirsts.add("**/libjsc.so")
+            pickFirsts.add("**/libtensorflowlite_jni.so")
+            pickFirsts.add("**/libtensorflowlite_gpu_jni.so")
+            pickFirsts.add("**/libtensorflowlite_flex.so")
+        }
+        resources {
+            excludes.add("META-INF/DEPENDENCIES")
+            excludes.add("META-INF/LICENSE")
+            excludes.add("META-INF/LICENSE.txt")
+            excludes.add("META-INF/license.txt")
+            excludes.add("META-INF/NOTICE")
+            excludes.add("META-INF/NOTICE.txt")
+            excludes.add("META-INF/notice.txt")
+            excludes.add("META-INF/ASL2.0")
+            excludes.add("META-INF/*.kotlin_module")
+        }
+    }
 }
 
 flutter {
@@ -48,4 +70,8 @@ flutter {
 dependencies {
     implementation("androidx.multidex:multidex:2.0.1")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    
+    // Add these dependencies for better compatibility
+    implementation("androidx.window:window:1.2.0")
+    implementation("androidx.window:window-java:1.2.0")
 }

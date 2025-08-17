@@ -137,7 +137,7 @@ class PhotoGalleryService {
     bool isBabyMode,
   ) async {
     try {
-      final metadataPath = '${imagePath}.meta';
+      final metadataPath = '$imagePath.meta';
       final metadata = {
         'created': DateTime.now().toIso8601String(),
         'isBabyMode': isBabyMode,
@@ -194,7 +194,7 @@ class PhotoGalleryService {
   // Get photo metadata
   static Future<Map<String, String>?> getPhotoMetadata(String imagePath) async {
     try {
-      final metadataPath = '${imagePath}.meta';
+      final metadataPath = '$imagePath.meta';
       final metadataFile = File(metadataPath);
 
       if (!await metadataFile.exists()) {
@@ -223,7 +223,7 @@ class PhotoGalleryService {
   static Future<bool> deletePhoto(String imagePath) async {
     try {
       final File imageFile = File(imagePath);
-      final File metadataFile = File('${imagePath}.meta');
+      final File metadataFile = File('$imagePath.meta');
 
       bool success = true;
 
@@ -544,9 +544,9 @@ class PhotoGalleryService {
         await File(photoPath).copy(backupFilePath);
 
         // Also backup metadata if exists
-        final metadataPath = '${photoPath}.meta';
+        final metadataPath = '$photoPath.meta';
         if (await File(metadataPath).exists()) {
-          final backupMetadataPath = '${backupFilePath}.meta';
+          final backupMetadataPath = '$backupFilePath.meta';
           await File(metadataPath).copy(backupMetadataPath);
         }
       }
@@ -581,7 +581,7 @@ class PhotoGalleryService {
             // Restore metadata if exists
             final metadataBackupPath = '${file.path}.meta';
             if (await File(metadataBackupPath).exists()) {
-              final metadataRestorePath = '${restorePath}.meta';
+              final metadataRestorePath = '$restorePath.meta';
               await File(metadataBackupPath).copy(metadataRestorePath);
             }
           }

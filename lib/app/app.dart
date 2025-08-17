@@ -5,7 +5,7 @@ import '../core/theme/app_theme.dart';
 import 'routes.dart';
 
 class DVLotteryApp extends StatelessWidget {
-  const DVLotteryApp({Key? key}) : super(key: key);
+  const DVLotteryApp({super.key});
 
   @override
   Widget build(BuildContext context) {
