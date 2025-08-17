@@ -1,4 +1,4 @@
-// lib/services/photo_validator_service.dart
+// lib/core/services/photo_validator_service.dart
 
 import 'dart:io';
 import 'dart:typed_data';
@@ -109,7 +109,7 @@ class PhotoValidatorService {
       final dimensionCheck = _validateDimensions(image);
       checks['dimensions'] = dimensionCheck.isValid;
       metrics['dimensions'] = dimensionCheck.score;
-      if (!dimensionCheck.isValid) {
+      if (!dimensionCheck.isValid && dimensionCheck.error != null) {
         errors.add(dimensionCheck.error!);
       } else {
         complianceScore += 20;
@@ -120,7 +120,7 @@ class PhotoValidatorService {
       final fileSizeCheck = _validateFileSize(imageBytes);
       checks['fileSize'] = fileSizeCheck.isValid;
       metrics['fileSize'] = fileSizeCheck.score;
-      if (!fileSizeCheck.isValid) {
+      if (!fileSizeCheck.isValid && fileSizeCheck.error != null) {
         errors.add(fileSizeCheck.error!);
       } else {
         complianceScore += 15;
@@ -131,7 +131,7 @@ class PhotoValidatorService {
       final backgroundCheck = await _analyzeBackground(image);
       checks['background'] = backgroundCheck.isValid;
       metrics['background'] = backgroundCheck.score;
-      if (!backgroundCheck.isValid) {
+      if (!backgroundCheck.isValid && backgroundCheck.error != null) {
         errors.add(backgroundCheck.error!);
       } else {
         complianceScore += 20;
@@ -157,7 +157,7 @@ class PhotoValidatorService {
       final lightingCheck = _analyzeLighting(image);
       checks['lighting'] = lightingCheck.isValid;
       metrics['lighting'] = lightingCheck.score;
-      if (!lightingCheck.isValid) {
+      if (!lightingCheck.isValid && lightingCheck.error != null) {
         errors.add(lightingCheck.error!);
       } else {
         complianceScore += 15;
@@ -168,7 +168,7 @@ class PhotoValidatorService {
       final shadowCheck = _detectShadows(image);
       checks['shadows'] = shadowCheck.isValid;
       metrics['shadows'] = shadowCheck.score;
-      if (!shadowCheck.isValid) {
+      if (!shadowCheck.isValid && shadowCheck.error != null) {
         errors.add(shadowCheck.error!);
       } else {
         complianceScore += 5;
@@ -224,7 +224,7 @@ class PhotoValidatorService {
           : PhotoError(
               code: 'INVALID_DIMENSIONS',
               message:
-                  'Photo must be exactly ${requiredWidth}x${requiredHeight} pixels. Current photo has incorrect dimensions.',
+                  'Photo must be exactly ${requiredWidth}x${requiredHeight} pixels. Current: ${image.width}x${image.height}',
               suggestion: 'Please retake the photo with correct dimensions',
               severity: ErrorSeverity.critical,
               details: {
@@ -244,30 +244,27 @@ class PhotoValidatorService {
       error = PhotoError(
         code: 'FILE_TOO_LARGE',
         message:
-            'Photo file size must be under ${maxFileSizeKB}KB. Please compress the image or take a new photo.',
-        suggestion: 'Try reducing image quality or retaking the photo',
+            'Photo file size must be under ${maxFileSizeKB}KB. Current: ${sizeKB.toStringAsFixed(0)}KB',
+        suggestion: 'Please compress the image or reduce quality',
         severity: ErrorSeverity.critical,
-        details: {
-          'currentSize': '${sizeKB.toStringAsFixed(0)}KB',
-          'maxSize': '${maxFileSizeKB}KB',
-        },
+        details: {'fileSize': '${sizeKB.toStringAsFixed(0)}KB'},
       );
     } else if (sizeKB < minFileSizeKB) {
       error = PhotoError(
         code: 'FILE_TOO_SMALL',
         message:
-            'Photo file size is too small (${sizeKB.toStringAsFixed(0)}KB). Minimum size is ${minFileSizeKB}KB.',
+            'Photo file size is too small (${sizeKB.toStringAsFixed(0)}KB). Minimum: ${minFileSizeKB}KB',
         suggestion: 'Please ensure the image has sufficient quality',
         severity: ErrorSeverity.warning,
+        details: {'fileSize': '${sizeKB.toStringAsFixed(0)}KB'},
       );
     }
 
     return ValidationCheck(
       isValid: isValid,
-      score: isValid ? 1.0 : (sizeKB <= maxFileSizeKB ? 0.5 : 0.0),
+      score: isValid ? 1.0 : (sizeKB > maxFileSizeKB ? 0.0 : 0.5),
       details: {
-        'sizeKB': sizeKB,
-        'sizeBytes': imageBytes.length,
+        'fileSizeKB': sizeKB,
         'maxSizeKB': maxFileSizeKB,
         'minSizeKB': minFileSizeKB,
       },
@@ -276,52 +273,36 @@ class PhotoValidatorService {
   }
 
   static Future<ValidationCheck> _analyzeBackground(img.Image image) async {
-    // Sample background pixels from edges
-    List<int> backgroundPixels = [];
+    // Sample background regions (corners and edges)
+    List<_ColorSample> backgroundSamples = [];
 
-    // Top edge
-    for (int x = 0; x < image.width; x += 10) {
-      for (int y = 0; y < 50; y += 10) {
-        final pixel = image.getPixel(x, y);
-        backgroundPixels.add(_getPixelValue(pixel));
+    // Sample corners
+    for (int x = 0; x < 50; x += 5) {
+      for (int y = 0; y < 50; y += 5) {
+        backgroundSamples.add(_samplePixel(image, x, y));
+        backgroundSamples.add(_samplePixel(image, image.width - x - 1, y));
+        backgroundSamples.add(_samplePixel(image, x, image.height - y - 1));
+        backgroundSamples.add(
+          _samplePixel(image, image.width - x - 1, image.height - y - 1),
+        );
       }
     }
 
-    // Bottom edge
-    for (int x = 0; x < image.width; x += 10) {
-      for (int y = image.height - 50; y < image.height; y += 10) {
-        final pixel = image.getPixel(x, y);
-        backgroundPixels.add(_getPixelValue(pixel));
-      }
-    }
+    // Calculate background metrics
+    double avgBrightness =
+        backgroundSamples.map((s) => s.brightness).reduce((a, b) => a + b) /
+        backgroundSamples.length;
+    double avgVariance = _calculateVariance(
+      backgroundSamples.map((s) => s.brightness).toList(),
+    );
 
-    // Calculate background statistics
-    double totalBrightness = 0;
-    double totalVariance = 0;
-    Set<int> uniqueColors = {};
+    // Check complexity
+    Set<String> uniqueColors = backgroundSamples
+        .map((s) => '${s.r}-${s.g}-${s.b}')
+        .toSet();
+    double complexity = uniqueColors.length / backgroundSamples.length;
 
-    for (int pixelValue in backgroundPixels) {
-      int r = (pixelValue >> 16) & 0xFF;
-      int g = (pixelValue >> 8) & 0xFF;
-      int b = pixelValue & 0xFF;
-
-      double brightness = (r + g + b) / 3;
-      totalBrightness += brightness;
-      uniqueColors.add(pixelValue);
-
-      // Calculate variance from white
-      double variance =
-          math.pow(255 - r, 2).toDouble() +
-          math.pow(255 - g, 2).toDouble() +
-          math.pow(255 - b, 2).toDouble();
-      totalVariance += variance;
-    }
-
-    double avgBrightness = totalBrightness / backgroundPixels.length;
-    double avgVariance = totalVariance / backgroundPixels.length;
-    double complexity = uniqueColors.length / backgroundPixels.length;
-
-    bool isTooComplex = complexity > 0.3 || avgVariance > 5000;
+    bool isTooComplex = complexity > 0.3 || avgVariance > 1000;
     bool isPoorContrast = avgBrightness < 180;
     bool isValid = !isTooComplex && !isPoorContrast;
 
@@ -371,6 +352,7 @@ class PhotoValidatorService {
         image,
         isBabyMode: isBabyMode,
       );
+
       if (mlKitResult.isValid || mlKitResult.details['faceCount'] > 0) {
         return mlKitResult;
       }
@@ -626,8 +608,8 @@ class PhotoValidatorService {
         errors: [
           PhotoError(
             code: 'FACE_DETECTION_ERROR',
-            message: 'Error detecting face in the image.',
-            suggestion: 'Please retake the photo with better lighting',
+            message: 'Error detecting face in the image. Please try again.',
+            suggestion: 'Ensure the photo is clear and well-lit',
             severity: ErrorSeverity.critical,
           ),
         ],
@@ -636,88 +618,50 @@ class PhotoValidatorService {
   }
 
   static ValidationCheck _analyzeLighting(img.Image image) {
-    // Sample pixels across the image
-    List<double> brightnessValues = [];
-    List<double> leftSideBrightness = [];
-    List<double> rightSideBrightness = [];
+    // Sample multiple regions
+    List<double> brightnessSamples = [];
 
-    int sampleStep = 10;
-
-    for (int y = 0; y < image.height; y += sampleStep) {
-      for (int x = 0; x < image.width; x += sampleStep) {
-        final pixel = image.getPixel(x, y);
-        int pixelValue = _getPixelValue(pixel);
-
-        int r = (pixelValue >> 16) & 0xFF;
-        int g = (pixelValue >> 8) & 0xFF;
-        int b = pixelValue & 0xFF;
-
-        double brightness = (r + g + b) / 3;
-        brightnessValues.add(brightness);
-
-        if (x < image.width / 2) {
-          leftSideBrightness.add(brightness);
-        } else {
-          rightSideBrightness.add(brightness);
-        }
+    // Sample grid across the image
+    for (int x = 0; x < image.width; x += 20) {
+      for (int y = 0; y < image.height; y += 20) {
+        final sample = _samplePixel(image, x, y);
+        brightnessSamples.add(sample.brightness);
       }
     }
 
-    // Calculate statistics
     double avgBrightness =
-        brightnessValues.reduce((a, b) => a + b) / brightnessValues.length;
-    double avgLeftBrightness =
-        leftSideBrightness.reduce((a, b) => a + b) / leftSideBrightness.length;
-    double avgRightBrightness =
-        rightSideBrightness.reduce((a, b) => a + b) /
-        rightSideBrightness.length;
+        brightnessSamples.reduce((a, b) => a + b) / brightnessSamples.length;
+    double variance = _calculateVariance(brightnessSamples);
 
-    // Calculate variance for contrast
-    double variance = 0;
-    for (double val in brightnessValues) {
-      variance += math.pow(val - avgBrightness, 2);
-    }
-    variance = variance / brightnessValues.length;
+    bool isTooLight = avgBrightness > 220;
+    bool isTooLow = avgBrightness < 80;
+    bool isUneven = variance > 2000;
 
-    // Check for issues
-    bool isTooDark = avgBrightness < 80;
-    bool isTooBright = avgBrightness > 220;
-    bool isUnbalanced = (avgLeftBrightness - avgRightBrightness).abs() > 30;
-    bool isLowContrast = variance < 400;
-
-    bool isValid =
-        !isTooDark && !isTooBright && !isUnbalanced && !isLowContrast;
+    bool isValid = !isTooLight && !isTooLow && !isUneven;
 
     PhotoError? error;
-    if (isTooDark) {
+    if (isTooLow) {
       error = PhotoError(
-        code: 'TOO_DARK',
+        code: 'IMAGE_TOO_DARK',
         message:
             'Image is too dark. Please increase lighting or take photo in brighter conditions.',
-        suggestion: 'Use better lighting or face a light source',
+        suggestion: 'Use natural daylight or better indoor lighting',
         severity: ErrorSeverity.critical,
       );
-    } else if (isTooBright) {
+    } else if (isTooLight) {
       error = PhotoError(
-        code: 'TOO_BRIGHT',
-        message: 'Image is too bright or overexposed. Please reduce lighting.',
+        code: 'IMAGE_TOO_BRIGHT',
+        message:
+            'Image is too bright or overexposed. Please reduce lighting or take photo in softer light.',
         suggestion: 'Avoid direct sunlight or very bright lights',
         severity: ErrorSeverity.critical,
       );
-    } else if (isUnbalanced) {
+    } else if (isUneven) {
       error = PhotoError(
-        code: 'UNBALANCED_LIGHTING',
+        code: 'UNEVEN_LIGHTING',
         message:
-            'Lighting on face is not balanced. The issue is due to the light source being at your side. We suggest you take a new photo, facing directly towards the light source.',
+            'Lighting is uneven across the photo. Please ensure even illumination.',
         suggestion: 'Face the light source directly for even lighting',
-        severity: ErrorSeverity.warning,
-      );
-    } else if (isLowContrast) {
-      error = PhotoError(
-        code: 'LOW_CONTRAST',
-        message:
-            'Image has low contrast. Please ensure good lighting conditions.',
-        suggestion: 'Improve lighting for better photo quality',
         severity: ErrorSeverity.warning,
       );
     }
@@ -727,54 +671,39 @@ class PhotoValidatorService {
       score: isValid ? 1.0 : 0.5,
       details: {
         'avgBrightness': avgBrightness,
-        'avgLeftBrightness': avgLeftBrightness,
-        'avgRightBrightness': avgRightBrightness,
         'variance': variance,
-        'isTooDark': isTooDark,
-        'isTooBright': isTooBright,
-        'isUnbalanced': isUnbalanced,
-        'isLowContrast': isLowContrast,
+        'isTooLight': isTooLight,
+        'isTooLow': isTooLow,
+        'isUneven': isUneven,
       },
       error: error,
     );
   }
 
   static ValidationCheck _detectShadows(img.Image image) {
-    // Detect harsh shadows by analyzing sudden brightness changes
+    // Detect harsh shadows by analyzing gradients
     List<double> gradients = [];
 
-    // Check horizontal gradients
-    for (int y = image.height ~/ 4; y < 3 * image.height ~/ 4; y += 5) {
-      for (int x = 1; x < image.width - 1; x++) {
-        final pixel1 = image.getPixel(x - 1, y);
-        final pixel2 = image.getPixel(x + 1, y);
-
-        int pixelValue1 = _getPixelValue(pixel1);
-        int pixelValue2 = _getPixelValue(pixel2);
-
-        int r1 = (pixelValue1 >> 16) & 0xFF;
-        int g1 = (pixelValue1 >> 8) & 0xFF;
-        int b1 = pixelValue1 & 0xFF;
-
-        int r2 = (pixelValue2 >> 16) & 0xFF;
-        int g2 = (pixelValue2 >> 8) & 0xFF;
-        int b2 = pixelValue2 & 0xFF;
-
-        double brightness1 = (r1 + g1 + b1) / 3;
-        double brightness2 = (r2 + g2 + b2) / 3;
-
-        gradients.add((brightness2 - brightness1).abs());
+    // Sample horizontal gradients
+    for (int y = image.height ~/ 3; y < (image.height * 2 / 3); y += 10) {
+      for (int x = 1; x < image.width - 1; x += 10) {
+        final left = _samplePixel(image, x - 1, y);
+        final right = _samplePixel(image, x + 1, y);
+        double gradient = (left.brightness - right.brightness).abs();
+        gradients.add(gradient);
       }
     }
 
-    // Calculate average gradient
-    double avgGradient = gradients.reduce((a, b) => a + b) / gradients.length;
+    double avgGradient = gradients.isNotEmpty
+        ? gradients.reduce((a, b) => a + b) / gradients.length
+        : 0;
 
-    // Count harsh transitions
     int harshTransitions = gradients.where((g) => g > 50).length;
-    double harshTransitionRatio = harshTransitions / gradients.length;
+    double harshTransitionRatio = gradients.isNotEmpty
+        ? harshTransitions / gradients.length
+        : 0;
 
-    bool hasHarshShadows = harshTransitionRatio > 0.1 || avgGradient > 25;
+    bool hasHarshShadows = harshTransitionRatio > 0.2 || avgGradient > 30;
 
     return ValidationCheck(
       isValid: !hasHarshShadows,
@@ -796,6 +725,35 @@ class PhotoValidatorService {
             )
           : null,
     );
+  }
+
+  // Helper methods
+  static _ColorSample _samplePixel(img.Image image, int x, int y) {
+    if (x < 0 || x >= image.width || y < 0 || y >= image.height) {
+      return _ColorSample(0, 0, 0);
+    }
+
+    final pixel = image.getPixel(x, y);
+    final value = _getPixelValue(pixel);
+
+    int r = (value >> 16) & 0xFF;
+    int g = (value >> 8) & 0xFF;
+    int b = value & 0xFF;
+
+    return _ColorSample(r, g, b);
+  }
+
+  static double _calculateVariance(List<double> values) {
+    if (values.isEmpty) return 0;
+
+    double mean = values.reduce((a, b) => a + b) / values.length;
+    double variance = 0;
+
+    for (double value in values) {
+      variance += math.pow(value - mean, 2);
+    }
+
+    return variance / values.length;
   }
 
   /// Helper method to get pixel value from Pixel object
@@ -835,4 +793,13 @@ class FaceValidationCheck {
     required this.details,
     required this.errors,
   });
+}
+
+class _ColorSample {
+  final int r;
+  final int g;
+  final int b;
+  final double brightness;
+
+  _ColorSample(this.r, this.g, this.b) : brightness = (r + g + b) / 3.0;
 }
