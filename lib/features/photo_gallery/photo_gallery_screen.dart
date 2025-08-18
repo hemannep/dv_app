@@ -1,11 +1,12 @@
-// lib/screens/photo_gallery_screen.dart
+// lib/features/photo_gallery/photo_gallery_screen.dart
 
 import 'dart:io';
-import 'package:dvapp/core/services/photo_validator_service.dart';
-import 'package:dvapp/features/photo_preview/photo_preview_screen.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:image_picker/image_picker.dart';
+import '../../core/services/photo_validation_service.dart';
+import '../../core/models/photo_models.dart';
+import '../photo_preview/photo_preview_screen.dart';
 
 class PhotoGalleryScreen extends StatefulWidget {
   const PhotoGalleryScreen({Key? key}) : super(key: key);
@@ -15,8 +16,12 @@ class PhotoGalleryScreen extends StatefulWidget {
 }
 
 class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
-  List<PhotoItem> _photos = [];
+  final PhotoValidationService _validationService = PhotoValidationService();
+  List<String> _photoPaths = [];
+  Map<String, PhotoValidationResult> _validationResults = {};
   bool _isLoading = true;
+  String _sortBy = 'date'; // 'date', 'score', 'status'
+  bool _showOnlyValid = false;
 
   @override
   void initState() {
@@ -24,96 +29,185 @@ class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
     _loadPhotos();
   }
 
+  @override
+  void dispose() {
+    _validationService.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadPhotos() async {
     setState(() => _isLoading = true);
 
-    final prefs = await SharedPreferences.getInstance();
-    final photoPaths = prefs.getStringList('recent_photos') ?? [];
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final paths = prefs.getStringList('all_photos') ?? [];
 
-    List<PhotoItem> photos = [];
-    for (String path in photoPaths) {
-      if (File(path).existsSync()) {
-        // Validate each photo
-        final validationResult = await PhotoValidatorService.validatePhoto(
-          path,
-        );
-        photos.add(
-          PhotoItem(
-            path: path,
-            validationResult: validationResult,
-            dateCreated: File(path).statSync().modified,
-          ),
-        );
+      // Filter out non-existent files
+      final validPaths = <String>[];
+      for (final path in paths) {
+        if (await File(path).exists()) {
+          validPaths.add(path);
+        }
       }
-    }
 
+      // Validate all photos
+      final results = <String, PhotoValidationResult>{};
+      for (final path in validPaths) {
+        final validationMap = await _validationService.validatePhoto(path);
+        results[path] = PhotoValidationResult.fromMap(validationMap);
+      }
+
+      setState(() {
+        _photoPaths = validPaths;
+        _validationResults = results;
+        _isLoading = false;
+      });
+
+      _sortPhotos();
+    } catch (e) {
+      setState(() => _isLoading = false);
+      _showError('Failed to load photos: $e');
+    }
+  }
+
+  void _sortPhotos() {
     setState(() {
-      _photos = photos;
-      _isLoading = false;
+      switch (_sortBy) {
+        case 'score':
+          _photoPaths.sort((a, b) {
+            final scoreA = _validationResults[a]?.score ?? 0;
+            final scoreB = _validationResults[b]?.score ?? 0;
+            return scoreB.compareTo(scoreA);
+          });
+          break;
+        case 'status':
+          _photoPaths.sort((a, b) {
+            final validA = _validationResults[a]?.isValid ?? false;
+            final validB = _validationResults[b]?.isValid ?? false;
+            if (validA && !validB) return -1;
+            if (!validA && validB) return 1;
+            return 0;
+          });
+          break;
+        case 'date':
+        default:
+          // Already sorted by date (most recent first)
+          _photoPaths = _photoPaths.reversed.toList();
+      }
+
+      if (_showOnlyValid) {
+        _photoPaths = _photoPaths.where((path) {
+          return _validationResults[path]?.isValid ?? false;
+        }).toList();
+      }
     });
   }
 
-  Future<void> _deletePhoto(int index) async {
-    final photo = _photos[index];
-
-    // Show confirmation dialog
-    final confirm = await showDialog<bool>(
+  Future<void> _deletePhoto(String path) async {
+    final confirmed = await showDialog<bool>(
       context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Delete Photo'),
-          content: const Text('Are you sure you want to delete this photo?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-              child: const Text('Delete'),
-            ),
-          ],
-        );
-      },
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Photo?'),
+        content: const Text('This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
     );
 
-    if (confirm == true) {
-      // Remove from list
-      setState(() {
-        _photos.removeAt(index);
-      });
-
-      // Update SharedPreferences
-      final prefs = await SharedPreferences.getInstance();
-      final updatedPaths = _photos.map((p) => p.path).toList();
-      await prefs.setStringList('recent_photos', updatedPaths);
-
-      // Delete file
+    if (confirmed == true) {
       try {
-        await File(photo.path).delete();
-      } catch (e) {
-        // Handle error
-      }
+        // Delete file
+        await File(path).delete();
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Photo deleted'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        // Update stored paths
+        final prefs = await SharedPreferences.getInstance();
+        final paths = prefs.getStringList('all_photos') ?? [];
+        paths.remove(path);
+        await prefs.setStringList('all_photos', paths);
+
+        // Update UI
+        setState(() {
+          _photoPaths.remove(path);
+          _validationResults.remove(path);
+        });
+
+        _showSuccess('Photo deleted');
+      } catch (e) {
+        _showError('Failed to delete photo: $e');
       }
     }
   }
 
-  void _viewPhoto(PhotoItem photo) {
+  Future<void> _importFromGallery() async {
+    final picker = ImagePicker();
+    final images = await picker.pickMultiImage();
+
+    if (images.isNotEmpty) {
+      setState(() => _isLoading = true);
+
+      int imported = 0;
+      for (final image in images) {
+        try {
+          final validationMap = await _validationService.validatePhoto(
+            image.path,
+          );
+          final result = PhotoValidationResult.fromMap(validationMap);
+
+          if (!_photoPaths.contains(image.path)) {
+            _photoPaths.add(image.path);
+            _validationResults[image.path] = result;
+            imported++;
+          }
+        } catch (e) {
+          debugPrint('Failed to import ${image.path}: $e');
+        }
+      }
+
+      // Save updated paths
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList('all_photos', _photoPaths);
+
+      setState(() => _isLoading = false);
+      _sortPhotos();
+
+      _showSuccess('Imported $imported photo${imported != 1 ? 's' : ''}');
+    }
+  }
+
+  void _showPhotoDetails(String path) {
+    final result = _validationResults[path];
+    if (result == null) return;
+
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) =>
-            PhotoPreviewScreen(imagePath: photo.path, isBabyMode: false),
+        builder: (context) => PhotoPreviewScreen(
+          imagePath: path,
+          validationResults: result.toMap(),
+          isBabyMode: false,
+        ),
       ),
+    );
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
+    );
+  }
+
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.green),
     );
   }
 
@@ -122,20 +216,48 @@ class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Photo Gallery'),
-        backgroundColor: Colors.white,
-        elevation: 0,
         actions: [
-          if (_photos.isNotEmpty)
-            TextButton.icon(
-              onPressed: _loadPhotos,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Refresh'),
+          // Sort menu
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.sort),
+            onSelected: (value) {
+              setState(() => _sortBy = value);
+              _sortPhotos();
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'date', child: Text('Sort by Date')),
+              const PopupMenuItem(value: 'score', child: Text('Sort by Score')),
+              const PopupMenuItem(
+                value: 'status',
+                child: Text('Sort by Status'),
+              ),
+            ],
+          ),
+
+          // Filter button
+          IconButton(
+            icon: Icon(
+              _showOnlyValid ? Icons.filter_alt : Icons.filter_alt_outlined,
+              color: _showOnlyValid ? Theme.of(context).primaryColor : null,
             ),
+            onPressed: () {
+              setState(() => _showOnlyValid = !_showOnlyValid);
+              _sortPhotos();
+            },
+            tooltip: 'Show only valid photos',
+          ),
+
+          // Import button
+          IconButton(
+            icon: const Icon(Icons.add_photo_alternate),
+            onPressed: _importFromGallery,
+            tooltip: 'Import from gallery',
+          ),
         ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _photos.isEmpty
+          : _photoPaths.isEmpty
           ? _buildEmptyState()
           : _buildPhotoGrid(),
     );
@@ -146,26 +268,30 @@ class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(Icons.photo_library_outlined, size: 80, color: Colors.grey[400]),
+          Icon(
+            Icons.photo_library_outlined,
+            size: 100,
+            color: Colors.grey[400],
+          ),
           const SizedBox(height: 16),
           Text(
             'No photos yet',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.w500,
-              color: Colors.grey[600],
-            ),
+            style: Theme.of(
+              context,
+            ).textTheme.headlineSmall?.copyWith(color: Colors.grey[600]),
           ),
           const SizedBox(height: 8),
           Text(
-            'Take your first DV photo to get started',
-            style: TextStyle(fontSize: 14, color: Colors.grey[500]),
+            'Take or import DV photos to see them here',
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: Colors.grey[500]),
           ),
           const SizedBox(height: 24),
           ElevatedButton.icon(
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.camera_alt),
-            label: const Text('Take Photo'),
+            onPressed: _importFromGallery,
+            icon: const Icon(Icons.add_photo_alternate),
+            label: const Text('Import Photos'),
           ),
         ],
       ),
@@ -174,159 +300,87 @@ class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
 
   Widget _buildPhotoGrid() {
     return GridView.builder(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(8),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 3,
-        crossAxisSpacing: 12,
-        mainAxisSpacing: 12,
-        childAspectRatio: 0.85,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+        childAspectRatio: 1,
       ),
-      itemCount: _photos.length,
+      itemCount: _photoPaths.length,
       itemBuilder: (context, index) {
-        final photo = _photos[index];
+        final path = _photoPaths[index];
+        final result = _validationResults[path];
+
         return GestureDetector(
-          onTap: () => _viewPhoto(photo),
-          onLongPress: () => _deletePhoto(index),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
+          onTap: () => _showPhotoDetails(path),
+          onLongPress: () => _deletePhoto(path),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Photo
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.file(
+                  File(path),
+                  fit: BoxFit.cover,
+                  errorBuilder: (context, error, stackTrace) {
+                    return Container(
+                      color: Colors.grey[300],
+                      child: const Icon(Icons.broken_image, color: Colors.grey),
+                    );
+                  },
                 ),
-              ],
-            ),
-            child: Stack(
-              children: [
-                // Photo
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.file(
-                    File(photo.path),
-                    fit: BoxFit.cover,
-                    width: double.infinity,
-                    height: double.infinity,
-                  ),
-                ),
+              ),
 
-                // Validation indicator
+              // Validation indicator
+              if (result != null)
                 Positioned(
-                  top: 8,
-                  right: 8,
+                  top: 4,
+                  right: 4,
                   child: Container(
-                    width: 28,
-                    height: 28,
+                    padding: const EdgeInsets.all(4),
                     decoration: BoxDecoration(
-                      color: photo.validationResult.isValid
-                          ? Colors.green
-                          : Colors.orange,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.2),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
+                      color: result.statusColor.withOpacity(0.9),
+                      borderRadius: BorderRadius.circular(4),
                     ),
-                    child: Icon(
-                      photo.validationResult.isValid
-                          ? Icons.check
-                          : Icons.warning,
-                      color: Colors.white,
-                      size: 16,
-                    ),
-                  ),
-                ),
-
-                // Compliance score
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  right: 0,
-                  child: Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      borderRadius: const BorderRadius.vertical(
-                        bottom: Radius.circular(12),
-                      ),
-                      gradient: LinearGradient(
-                        begin: Alignment.bottomCenter,
-                        end: Alignment.topCenter,
-                        colors: [
-                          Colors.black.withOpacity(0.7),
-                          Colors.transparent,
-                        ],
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        Icon(
+                          result.isValid ? Icons.check : Icons.warning,
+                          color: Colors.white,
+                          size: 12,
+                        ),
+                        const SizedBox(width: 2),
                         Text(
-                          '${photo.validationResult.complianceScore.toStringAsFixed(0)}%',
+                          '${result.score.toInt()}%',
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 14,
+                            fontSize: 10,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
-                        Text(
-                          _formatDate(photo.dateCreated),
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 10,
-                          ),
-                        ),
                       ],
                     ),
                   ),
                 ),
 
-                // Delete button (shown on long press)
-                Positioned(
-                  top: 8,
-                  left: 8,
-                  child: GestureDetector(
-                    onTap: () => _deletePhoto(index),
-                    child: Container(
-                      width: 28,
-                      height: 28,
-                      decoration: BoxDecoration(
-                        color: Colors.red.withOpacity(0.9),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(
-                        Icons.delete,
-                        color: Colors.white,
-                        size: 16,
-                      ),
-                    ),
+              // Selection overlay on long press
+              Positioned.fill(
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => _showPhotoDetails(path),
+                    onLongPress: () => _deletePhoto(path),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         );
       },
     );
   }
-
-  String _formatDate(DateTime date) {
-    return '${date.day}/${date.month}/${date.year}';
-  }
-}
-
-class PhotoItem {
-  final String path;
-  final PhotoValidationResult validationResult;
-  final DateTime dateCreated;
-
-  PhotoItem({
-    required this.path,
-    required this.validationResult,
-    required this.dateCreated,
-  });
 }

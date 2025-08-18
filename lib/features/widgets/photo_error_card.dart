@@ -1,128 +1,116 @@
 // lib/widgets/photo_error_card.dart
 
-import 'package:dvapp/core/services/photo_validator_service.dart';
+import 'package:dvapp/core/models/photo_models.dart';
 import 'package:flutter/material.dart';
 
 class PhotoErrorCard extends StatelessWidget {
   final PhotoError error;
-  final int index;
+  final VoidCallback? onDismiss;
 
-  const PhotoErrorCard({Key? key, required this.error, required this.index})
+  const PhotoErrorCard({Key? key, required this.error, this.onDismiss})
     : super(key: key);
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: _getBackgroundColor(),
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _getBorderColor(), width: 1),
+        side: BorderSide(color: _getBorderColor(), width: 1),
       ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                color: _getIconBackgroundColor(),
-                shape: BoxShape.circle,
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          color: _getBackgroundColor(),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              // Icon
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: _getIconBackgroundColor(),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(_getIcon(), color: error.color, size: 24),
               ),
-              child: Center(
-                child: Icon(_getIcon(), color: Colors.white, size: 18),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    error.message,
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                      color: Colors.grey[800],
-                    ),
-                  ),
-                  if (error.suggestion != null) ...[
-                    const SizedBox(height: 4),
+              const SizedBox(width: 12),
+
+              // Content
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Text(
-                      error.suggestion!,
-                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                    ),
-                  ],
-                  if (error.details != null && error.details!.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      _formatDetails(),
+                      error.message,
                       style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.grey[500],
-                        fontFamily: 'monospace',
+                        color: error.isCritical
+                            ? Colors.red[900]
+                            : Colors.orange[900],
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
                       ),
                     ),
+                    if (error.suggestion != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        error.suggestion!,
+                        style: TextStyle(
+                          color: error.isCritical
+                              ? Colors.red[700]
+                              : Colors.orange[700],
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
-            ),
-          ],
+
+              // Dismiss button
+              if (onDismiss != null)
+                IconButton(
+                  onPressed: onDismiss,
+                  icon: Icon(
+                    Icons.close,
+                    color: error.color.withOpacity(0.7),
+                    size: 20,
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   Color _getBackgroundColor() {
-    switch (error.severity) {
-      case ErrorSeverity.critical:
-        return Colors.red.shade50;
-      case ErrorSeverity.warning:
-        return Colors.orange.shade50;
-      case ErrorSeverity.info:
-        return Colors.blue.shade50;
+    if (error.isCritical) {
+      return Colors.red.withOpacity(0.1);
+    } else {
+      return Colors.orange.withOpacity(0.1);
     }
   }
 
   Color _getBorderColor() {
-    switch (error.severity) {
-      case ErrorSeverity.critical:
-        return Colors.red.shade200;
-      case ErrorSeverity.warning:
-        return Colors.orange.shade200;
-      case ErrorSeverity.info:
-        return Colors.blue.shade200;
+    if (error.isCritical) {
+      return Colors.red.withOpacity(0.3);
+    } else {
+      return Colors.orange.withOpacity(0.3);
     }
   }
 
   Color _getIconBackgroundColor() {
-    switch (error.severity) {
-      case ErrorSeverity.critical:
-        return Colors.red;
-      case ErrorSeverity.warning:
-        return Colors.orange;
-      case ErrorSeverity.info:
-        return Colors.blue;
+    if (error.isCritical) {
+      return Colors.red.withOpacity(0.2);
+    } else {
+      return Colors.orange.withOpacity(0.2);
     }
   }
 
   IconData _getIcon() {
-    switch (error.severity) {
-      case ErrorSeverity.critical:
-        return Icons.error_outline;
-      case ErrorSeverity.warning:
-        return Icons.warning_amber;
-      case ErrorSeverity.info:
-        return Icons.info_outline;
-    }
-  }
-
-  String _formatDetails() {
-    if (error.details == null) return '';
-    return error.details!.entries
-        .map((e) => '${e.key}: ${e.value}')
-        .join(' | ');
+    return error.icon;
   }
 }

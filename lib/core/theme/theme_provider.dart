@@ -1,56 +1,74 @@
+// lib/core/theme/theme_provider.dart
+
 import 'package:flutter/material.dart';
-import '../services/storage_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ThemeProvider extends ChangeNotifier {
+  static const String _themeKey = 'theme_mode';
+  static const String _languageKey = 'app_language';
+
   ThemeMode _themeMode = ThemeMode.system;
+  String _languageCode = 'en';
 
   ThemeMode get themeMode => _themeMode;
+  String get languageCode => _languageCode;
 
-  bool get isDarkMode => _themeMode == ThemeMode.dark;
-  bool get isLightMode => _themeMode == ThemeMode.light;
-  bool get isSystemMode => _themeMode == ThemeMode.system;
+  // Check if dark mode is active
+  bool get isDarkMode {
+    if (_themeMode == ThemeMode.system) {
+      // For system mode, we need to check the actual system brightness
+      // This will be determined by the BuildContext in the UI
+      return false; // Default to light for system mode
+    }
+    return _themeMode == ThemeMode.dark;
+  }
+
+  // Get the actual dark mode status with context
+  bool isDarkModeActive(BuildContext context) {
+    if (_themeMode == ThemeMode.system) {
+      return MediaQuery.of(context).platformBrightness == Brightness.dark;
+    }
+    return _themeMode == ThemeMode.dark;
+  }
 
   Future<void> loadTheme() async {
-    final savedTheme = await StorageService.getTheme();
-    _themeMode = _getThemeModeFromString(savedTheme);
+    final prefs = await SharedPreferences.getInstance();
+    final themeModeIndex = prefs.getInt(_themeKey) ?? ThemeMode.system.index;
+    _themeMode = ThemeMode.values[themeModeIndex];
+    _languageCode = prefs.getString(_languageKey) ?? 'en';
     notifyListeners();
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {
+    if (_themeMode == mode) return;
+
     _themeMode = mode;
-    await StorageService.setTheme(_getStringFromThemeMode(mode));
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_themeKey, mode.index);
+    notifyListeners();
+  }
+
+  Future<void> setLanguage(String languageCode) async {
+    if (_languageCode == languageCode) return;
+
+    _languageCode = languageCode;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_languageKey, languageCode);
     notifyListeners();
   }
 
   void toggleTheme() {
     if (_themeMode == ThemeMode.light) {
       setThemeMode(ThemeMode.dark);
+    } else if (_themeMode == ThemeMode.dark) {
+      setThemeMode(ThemeMode.system);
     } else {
       setThemeMode(ThemeMode.light);
     }
   }
 
-  String _getStringFromThemeMode(ThemeMode mode) {
-    switch (mode) {
-      case ThemeMode.light:
-        return 'light';
-      case ThemeMode.dark:
-        return 'dark';
-      case ThemeMode.system:
-        return 'system';
-    }
-  }
-
-  ThemeMode _getThemeModeFromString(String theme) {
-    switch (theme) {
-      case 'light':
-        return ThemeMode.light;
-      case 'dark':
-        return ThemeMode.dark;
-      case 'system':
-        return ThemeMode.system;
-      default:
-        return ThemeMode.system;
-    }
+  // Set dark mode directly
+  Future<void> setDarkMode(bool isDark) async {
+    await setThemeMode(isDark ? ThemeMode.dark : ThemeMode.light);
   }
 }
