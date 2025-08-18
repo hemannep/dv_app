@@ -11,14 +11,14 @@ class FeatureCard extends StatelessWidget {
   final bool isHighlighted;
 
   const FeatureCard({
-    Key? key,
+    super.key,
     required this.icon,
     required this.title,
     required this.description,
     required this.onTap,
     this.iconColor,
     this.isHighlighted = false,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

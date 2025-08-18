@@ -45,7 +45,7 @@ class _SplashScreenState extends State<SplashScreen>
 
     if (!mounted) return;
 
-    final isOnboardingCompleted = await StorageService.isOnboardingCompleted();
+    final isOnboardingCompleted = StorageService.isOnboardingCompleted();
 
     if (isOnboardingCompleted) {
       AppRoutes.navigateToHome(context);

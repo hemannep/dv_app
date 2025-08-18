@@ -7,10 +7,10 @@ class LiveValidationIndicator extends StatelessWidget {
   final bool isBabyMode;
 
   const LiveValidationIndicator({
-    Key? key,
+    super.key,
     required this.validationResults,
     this.isBabyMode = false,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

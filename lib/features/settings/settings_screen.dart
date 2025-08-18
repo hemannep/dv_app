@@ -31,7 +31,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadLanguage() async {
-    final languageCode = await StorageService.getLanguage();
+    final languageCode = StorageService.getLanguage();
     final language = _languages.firstWhere(
       (lang) => lang['code'] == languageCode,
       orElse: () => _languages.first,

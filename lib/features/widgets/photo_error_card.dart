@@ -7,8 +7,7 @@ class PhotoErrorCard extends StatelessWidget {
   final PhotoError error;
   final VoidCallback? onDismiss;
 
-  const PhotoErrorCard({Key? key, required this.error, this.onDismiss})
-    : super(key: key);
+  const PhotoErrorCard({super.key, required this.error, this.onDismiss});
 
   @override
   Widget build(BuildContext context) {

@@ -1,3 +1,4 @@
+// lib/features/home/home_screen.dart - Fixed overflow issue
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -116,9 +117,9 @@ class HomeScreen extends StatelessWidget {
               ],
             ),
             const SizedBox(height: AppConstants.mediumSpacing),
-            _buildStatRow(context, 'Application Period', 'October - November'),
-            _buildStatRow(context, 'Results Available', 'May (Next Year)'),
-            _buildStatRow(context, 'Total Visas', '55,000 annually'),
+            _buildStatRow(context, 'Application Period', 'Oct - Nov'),
+            _buildStatRow(context, 'Results Available', 'Next May'),
+            _buildStatRow(context, 'Total Visas', '55K annually'),
             const SizedBox(height: AppConstants.mediumSpacing),
             Container(
               padding: const EdgeInsets.all(AppConstants.mediumSpacing),
@@ -149,18 +150,31 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
+  // Fixed overflow issue by using Flexible and shorter text
   Widget _buildStatRow(BuildContext context, String label, String value) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label, style: Theme.of(context).textTheme.bodyMedium),
-          Text(
-            value,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: Theme.of(context).primaryColor,
+          Expanded(
+            flex: 3,
+            child: Text(
+              label,
+              style: Theme.of(context).textTheme.bodyMedium,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            flex: 2,
+            child: Text(
+              value,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).primaryColor,
+              ),
+              textAlign: TextAlign.end,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ],
@@ -256,68 +270,86 @@ class HomeScreen extends StatelessWidget {
       if (await canLaunchUrl(url)) {
         await launchUrl(url, mode: LaunchMode.externalApplication);
       } else {
-        _showErrorSnackBar(context, 'Could not open the official DV website');
+        throw 'Could not launch $url';
       }
     } catch (e) {
-      _showErrorSnackBar(context, 'Error opening website: $e');
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error opening URL: $e')));
+      }
     }
   }
 
   void _showRequirementsDialog(BuildContext context) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('DV Requirements'),
-        content: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Photo Requirements:',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: AppConstants.smallSpacing),
-              ...AppConstants.photoRequirements.map(
-                (req) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('• '),
-                      Expanded(child: Text(req)),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: AppConstants.mediumSpacing),
-              Text(
-                'Eligibility:',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: AppConstants.smallSpacing),
-              const Text(
-                'Must be from an eligible country (most countries except those with high US immigration rates).',
-              ),
-            ],
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('DV Lottery Requirements'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildRequirementSection('Eligibility', [
+                  'Born in eligible country',
+                  'High school education or equivalent',
+                  'Two years work experience in qualifying occupation',
+                ]),
+                const SizedBox(height: 16),
+                _buildRequirementSection('Photo Requirements', [
+                  '600x600 pixels JPEG format',
+                  'Head size 50-69% of image',
+                  'Neutral expression, eyes open',
+                  'Plain white/off-white background',
+                ]),
+                const SizedBox(height: 16),
+                _buildRequirementSection('Important Dates', [
+                  'Registration: October - November',
+                  'Results: May following year',
+                  'Only one entry per person allowed',
+                ]),
+              ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+            ElevatedButton(
+              onPressed: () => _launchDVForm(context),
+              child: const Text('Visit Official Site'),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  void _showErrorSnackBar(BuildContext context, String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Theme.of(context).colorScheme.error,
-      ),
+  Widget _buildRequirementSection(String title, List<String> items) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        const SizedBox(height: 8),
+        ...items.map(
+          (item) => Padding(
+            padding: const EdgeInsets.only(left: 16, bottom: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('• ', style: TextStyle(fontSize: 16)),
+                Expanded(child: Text(item)),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

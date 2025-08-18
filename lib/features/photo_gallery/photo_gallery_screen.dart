@@ -9,7 +9,7 @@ import '../../core/models/photo_models.dart';
 import '../photo_preview/photo_preview_screen.dart';
 
 class PhotoGalleryScreen extends StatefulWidget {
-  const PhotoGalleryScreen({Key? key}) : super(key: key);
+  const PhotoGalleryScreen({super.key});
 
   @override
   State<PhotoGalleryScreen> createState() => _PhotoGalleryScreenState();

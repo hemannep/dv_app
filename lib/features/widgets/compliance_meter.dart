@@ -1,14 +1,12 @@
 // lib/widgets/compliance_meter.dart
 
 import 'package:flutter/material.dart';
-import 'dart:math' as math;
 
 class ComplianceMeter extends StatefulWidget {
   final double score;
   final bool animate;
 
-  const ComplianceMeter({Key? key, required this.score, this.animate = true})
-    : super(key: key);
+  const ComplianceMeter({super.key, required this.score, this.animate = true});
 
   @override
   State<ComplianceMeter> createState() => _ComplianceMeterState();

@@ -2,11 +2,8 @@
 
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:gal/gal.dart'; // CHANGED: Use gal instead of image_gallery_saver
 import 'package:share_plus/share_plus.dart';
-import 'package:path/path.dart' as path;
-import '../../core/constants/app_constants.dart';
 
 class PhotoPreviewScreen extends StatefulWidget {
   final String imagePath;
@@ -14,11 +11,11 @@ class PhotoPreviewScreen extends StatefulWidget {
   final bool isBabyMode;
 
   const PhotoPreviewScreen({
-    Key? key,
+    super.key,
     required this.imagePath,
     this.validationResults,
     this.isBabyMode = false,
-  }) : super(key: key);
+  });
 
   @override
   State<PhotoPreviewScreen> createState() => _PhotoPreviewScreenState();
@@ -54,17 +51,9 @@ class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
     setState(() => _isSaving = true);
 
     try {
-      final File imageFile = File(widget.imagePath);
-      final result = await ImageGallerySaver.saveFile(
-        imageFile.path,
-        name: 'DV_Photo_${DateTime.now().millisecondsSinceEpoch}',
-      );
-
-      if (result['isSuccess']) {
-        _showSnackBar('Photo saved to gallery successfully!', isSuccess: true);
-      } else {
-        _showSnackBar('Failed to save photo to gallery');
-      }
+      // CHANGED: Use Gal.putImage instead of ImageGallerySaver
+      await Gal.putImage(widget.imagePath);
+      _showSnackBar('Photo saved to gallery successfully!', isSuccess: true);
     } catch (e) {
       _showSnackBar('Error saving photo: $e');
     } finally {

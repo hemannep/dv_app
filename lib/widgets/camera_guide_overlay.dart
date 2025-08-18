@@ -1,17 +1,16 @@
 // lib/widgets/camera_guide_overlay.dart
 
 import 'package:flutter/material.dart';
-import 'dart:math' as math;
 
 class CameraGuideOverlay extends StatefulWidget {
   final bool isBabyMode;
   final bool showGrid;
 
   const CameraGuideOverlay({
-    Key? key,
+    super.key,
     this.isBabyMode = false,
     this.showGrid = true,
-  }) : super(key: key);
+  });
 
   @override
   State<CameraGuideOverlay> createState() => _CameraGuideOverlayState();

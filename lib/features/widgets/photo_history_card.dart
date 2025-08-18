@@ -11,13 +11,13 @@ class PhotoHistoryCard extends StatelessWidget {
   final VoidCallback? onDelete;
 
   const PhotoHistoryCard({
-    Key? key,
+    super.key,
     required this.imagePath,
     required this.onTap,
     this.timestamp,
     this.validationScore,
     this.onDelete,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
