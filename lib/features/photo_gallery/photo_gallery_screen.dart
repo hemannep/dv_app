@@ -1,386 +1,563 @@
-// lib/features/photo_gallery/photo_gallery_screen.dart
+// lib/screens/photo_gallery_screen.dart
 
-import 'dart:io';
+import 'package:dvapp/core/services/enhanced_face_detection_service.dart';
+import 'package:dvapp/features/photo_preview/photo_preview_screen.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import '../../core/services/photo_validation_service.dart';
-import '../../core/models/photo_models.dart';
-import '../photo_preview/photo_preview_screen.dart';
+import 'package:image/image.dart' as img;
+import 'dart:io';
+import 'package:permission_handler/permission_handler.dart';
 
 class PhotoGalleryScreen extends StatefulWidget {
-  const PhotoGalleryScreen({super.key});
+  final bool isBabyMode;
+
+  const PhotoGalleryScreen({super.key, this.isBabyMode = false});
 
   @override
   State<PhotoGalleryScreen> createState() => _PhotoGalleryScreenState();
 }
 
-class _PhotoGalleryScreenState extends State<PhotoGalleryScreen> {
-  final PhotoValidationService _validationService = PhotoValidationService();
-  List<String> _photoPaths = [];
-  Map<String, PhotoValidationResult> _validationResults = {};
-  bool _isLoading = true;
-  String _sortBy = 'date'; // 'date', 'score', 'status'
-  bool _showOnlyValid = false;
+class _PhotoGalleryScreenState extends State<PhotoGalleryScreen>
+    with SingleTickerProviderStateMixin {
+  final ImagePicker _picker = ImagePicker();
+  bool _isProcessing = false;
+  String _statusMessage = '';
+
+  // Animation controller
+  late AnimationController _animationController;
+  late Animation<double> _scaleAnimation;
+
+  // Gallery images cache
+  final List<String> _recentPhotoPaths = [];
+  bool _hasGalleryPermission = false;
 
   @override
   void initState() {
     super.initState();
-    _loadPhotos();
+    _initializeAnimations();
+    _checkGalleryPermission();
+    _loadRecentPhotos();
+  }
+
+  void _initializeAnimations() {
+    _animationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+
+    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeOutBack),
+    );
+
+    _animationController.forward();
+  }
+
+  Future<void> _checkGalleryPermission() async {
+    final status = await Permission.photos.status;
+    setState(() {
+      _hasGalleryPermission = status.isGranted;
+    });
+
+    if (!status.isGranted && !status.isPermanentlyDenied) {
+      final result = await Permission.photos.request();
+      setState(() {
+        _hasGalleryPermission = result.isGranted;
+      });
+    }
+  }
+
+  Future<void> _loadRecentPhotos() async {
+    // This is a placeholder - in a real app, you might load thumbnails
+    // of recently processed DV photos from local storage
+    try {
+      // Load from SharedPreferences or local database
+      setState(() {
+        // _recentPhotoPaths = loadedPaths;
+      });
+    } catch (e) {
+      print('Error loading recent photos: $e');
+    }
+  }
+
+  Future<void> _pickImageFromGallery() async {
+    if (!_hasGalleryPermission) {
+      _showPermissionDialog();
+      return;
+    }
+
+    try {
+      setState(() {
+        _isProcessing = true;
+        _statusMessage = 'Opening gallery...';
+      });
+
+      final XFile? pickedFile = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 100,
+      );
+
+      if (pickedFile != null) {
+        setState(() {
+          _statusMessage = 'Processing image...';
+        });
+
+        // Validate image format
+        if (!pickedFile.path.toLowerCase().endsWith('.jpg') &&
+            !pickedFile.path.toLowerCase().endsWith('.jpeg')) {
+          _showErrorDialog(
+            'Invalid Format',
+            'Please select a JPEG image. DV lottery only accepts JPEG format.',
+          );
+          return;
+        }
+
+        // Load the image for face detection
+        final File imageFile = File(pickedFile.path);
+        final bytes = await imageFile.readAsBytes();
+
+        // Check file size
+        if (bytes.length > 240 * 1024) {
+          setState(() {
+            _statusMessage = 'Compressing image...';
+          });
+        }
+
+        final image = img.decodeImage(bytes);
+
+        if (image != null) {
+          setState(() {
+            _statusMessage = 'Detecting face...';
+          });
+
+          // Perform face detection with haptic feedback
+          HapticFeedback.lightImpact();
+
+          final detectionResult = await EnhancedFaceDetectionService.instance
+              .detectFace(imageSource: image, isBabyMode: widget.isBabyMode);
+
+          // Navigate to preview with detection result
+          if (mounted) {
+            final result = await Navigator.push<bool>(
+              context,
+              MaterialPageRoute(
+                builder: (context) => PhotoPreviewScreen(
+                  imagePath: pickedFile.path,
+                  isBabyMode: widget.isBabyMode,
+                  detectionResult: detectionResult,
+                ),
+              ),
+            );
+
+            if (result == true) {
+              _showSuccessMessage('Photo processed successfully!');
+              // Add to recent photos
+              setState(() {
+                _recentPhotoPaths.insert(0, pickedFile.path);
+                if (_recentPhotoPaths.length > 10) {
+                  _recentPhotoPaths.removeLast();
+                }
+              });
+            }
+          }
+        } else {
+          _showErrorDialog(
+            'Invalid Image',
+            'Could not process the selected image. Please try another photo.',
+          );
+        }
+      }
+    } catch (e) {
+      print('Error picking image: $e');
+      _showErrorDialog(
+        'Error',
+        'An error occurred while processing the image: ${e.toString()}',
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _statusMessage = '';
+        });
+      }
+    }
+  }
+
+  Future<void> _processRecentPhoto(String path) async {
+    try {
+      setState(() {
+        _isProcessing = true;
+        _statusMessage = 'Loading photo...';
+      });
+
+      final File imageFile = File(path);
+      if (!imageFile.existsSync()) {
+        _showErrorDialog(
+          'File Not Found',
+          'This photo no longer exists on your device.',
+        );
+        setState(() {
+          _recentPhotoPaths.remove(path);
+        });
+        return;
+      }
+
+      final bytes = await imageFile.readAsBytes();
+      final image = img.decodeImage(bytes);
+
+      if (image != null) {
+        setState(() {
+          _statusMessage = 'Detecting face...';
+        });
+
+        final detectionResult = await EnhancedFaceDetectionService.instance
+            .detectFace(imageSource: image, isBabyMode: widget.isBabyMode);
+
+        if (mounted) {
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PhotoPreviewScreen(
+                imagePath: path,
+                isBabyMode: widget.isBabyMode,
+                detectionResult: detectionResult,
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      print('Error processing recent photo: $e');
+      _showErrorDialog('Error', 'Failed to process photo: ${e.toString()}');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+          _statusMessage = '';
+        });
+      }
+    }
+  }
+
+  void _showPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Gallery Permission Required'),
+        content: const Text(
+          'This app needs access to your photo gallery to select photos for DV lottery application.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showErrorDialog(String title, String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.red),
+            const SizedBox(width: 8),
+            Text(title),
+          ],
+        ),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSuccessMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle, color: Colors.white),
+            const SizedBox(width: 8),
+            Text(message),
+          ],
+        ),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
   }
 
   @override
   void dispose() {
-    _validationService.dispose();
+    _animationController.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadPhotos() async {
-    setState(() => _isLoading = true);
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final paths = prefs.getStringList('all_photos') ?? [];
-
-      // Filter out non-existent files
-      final validPaths = <String>[];
-      for (final path in paths) {
-        if (await File(path).exists()) {
-          validPaths.add(path);
-        }
-      }
-
-      // Validate all photos
-      final results = <String, PhotoValidationResult>{};
-      for (final path in validPaths) {
-        final validationMap = await _validationService.validatePhoto(path);
-        results[path] = PhotoValidationResult.fromMap(validationMap);
-      }
-
-      setState(() {
-        _photoPaths = validPaths;
-        _validationResults = results;
-        _isLoading = false;
-      });
-
-      _sortPhotos();
-    } catch (e) {
-      setState(() => _isLoading = false);
-      _showError('Failed to load photos: $e');
-    }
-  }
-
-  void _sortPhotos() {
-    setState(() {
-      switch (_sortBy) {
-        case 'score':
-          _photoPaths.sort((a, b) {
-            final scoreA = _validationResults[a]?.score ?? 0;
-            final scoreB = _validationResults[b]?.score ?? 0;
-            return scoreB.compareTo(scoreA);
-          });
-          break;
-        case 'status':
-          _photoPaths.sort((a, b) {
-            final validA = _validationResults[a]?.isValid ?? false;
-            final validB = _validationResults[b]?.isValid ?? false;
-            if (validA && !validB) return -1;
-            if (!validA && validB) return 1;
-            return 0;
-          });
-          break;
-        case 'date':
-        default:
-          // Already sorted by date (most recent first)
-          _photoPaths = _photoPaths.reversed.toList();
-      }
-
-      if (_showOnlyValid) {
-        _photoPaths = _photoPaths.where((path) {
-          return _validationResults[path]?.isValid ?? false;
-        }).toList();
-      }
-    });
-  }
-
-  Future<void> _deletePhoto(String path) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Delete Photo?'),
-        content: const Text('This action cannot be undone.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true) {
-      try {
-        // Delete file
-        await File(path).delete();
-
-        // Update stored paths
-        final prefs = await SharedPreferences.getInstance();
-        final paths = prefs.getStringList('all_photos') ?? [];
-        paths.remove(path);
-        await prefs.setStringList('all_photos', paths);
-
-        // Update UI
-        setState(() {
-          _photoPaths.remove(path);
-          _validationResults.remove(path);
-        });
-
-        _showSuccess('Photo deleted');
-      } catch (e) {
-        _showError('Failed to delete photo: $e');
-      }
-    }
-  }
-
-  Future<void> _importFromGallery() async {
-    final picker = ImagePicker();
-    final images = await picker.pickMultiImage();
-
-    if (images.isNotEmpty) {
-      setState(() => _isLoading = true);
-
-      int imported = 0;
-      for (final image in images) {
-        try {
-          final validationMap = await _validationService.validatePhoto(
-            image.path,
-          );
-          final result = PhotoValidationResult.fromMap(validationMap);
-
-          if (!_photoPaths.contains(image.path)) {
-            _photoPaths.add(image.path);
-            _validationResults[image.path] = result;
-            imported++;
-          }
-        } catch (e) {
-          debugPrint('Failed to import ${image.path}: $e');
-        }
-      }
-
-      // Save updated paths
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList('all_photos', _photoPaths);
-
-      setState(() => _isLoading = false);
-      _sortPhotos();
-
-      _showSuccess('Imported $imported photo${imported != 1 ? 's' : ''}');
-    }
-  }
-
-  void _showPhotoDetails(String path) {
-    final result = _validationResults[path];
-    if (result == null) return;
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PhotoPreviewScreen(
-          imagePath: path,
-          validationResults: result.toMap(),
-          isBabyMode: false,
-        ),
-      ),
-    );
-  }
-
-  void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
-    );
-  }
-
-  void _showSuccess(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.green),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
         title: const Text('Photo Gallery'),
+        backgroundColor: theme.primaryColor,
+        elevation: 0,
         actions: [
-          // Sort menu
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.sort),
-            onSelected: (value) {
-              setState(() => _sortBy = value);
-              _sortPhotos();
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(value: 'date', child: Text('Sort by Date')),
-              const PopupMenuItem(value: 'score', child: Text('Sort by Score')),
-              const PopupMenuItem(
-                value: 'status',
-                child: Text('Sort by Status'),
+          if (widget.isBabyMode)
+            Container(
+              margin: const EdgeInsets.only(right: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.pink.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(20),
               ),
-            ],
-          ),
-
-          // Filter button
-          IconButton(
-            icon: Icon(
-              _showOnlyValid ? Icons.filter_alt : Icons.filter_alt_outlined,
-              color: _showOnlyValid ? Theme.of(context).primaryColor : null,
+              child: const Row(
+                children: [
+                  Icon(Icons.child_care, size: 18, color: Colors.white),
+                  SizedBox(width: 4),
+                  Text(
+                    'Baby Mode',
+                    style: TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                ],
+              ),
             ),
-            onPressed: () {
-              setState(() => _showOnlyValid = !_showOnlyValid);
-              _sortPhotos();
-            },
-            tooltip: 'Show only valid photos',
-          ),
-
-          // Import button
-          IconButton(
-            icon: const Icon(Icons.add_photo_alternate),
-            onPressed: _importFromGallery,
-            tooltip: 'Import from gallery',
-          ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _photoPaths.isEmpty
-          ? _buildEmptyState()
-          : _buildPhotoGrid(),
-    );
-  }
-
-  Widget _buildEmptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      body: Stack(
         children: [
-          Icon(
-            Icons.photo_library_outlined,
-            size: 100,
-            color: Colors.grey[400],
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'No photos yet',
-            style: Theme.of(
-              context,
-            ).textTheme.headlineSmall?.copyWith(color: Colors.grey[600]),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Take or import DV photos to see them here',
-            style: Theme.of(
-              context,
-            ).textTheme.bodyMedium?.copyWith(color: Colors.grey[500]),
-          ),
-          const SizedBox(height: 24),
-          ElevatedButton.icon(
-            onPressed: _importFromGallery,
-            icon: const Icon(Icons.add_photo_alternate),
-            label: const Text('Import Photos'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPhotoGrid() {
-    return GridView.builder(
-      padding: const EdgeInsets.all(8),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
-        childAspectRatio: 1,
-      ),
-      itemCount: _photoPaths.length,
-      itemBuilder: (context, index) {
-        final path = _photoPaths[index];
-        final result = _validationResults[path];
-
-        return GestureDetector(
-          onTap: () => _showPhotoDetails(path),
-          onLongPress: () => _deletePhoto(path),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // Photo
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.file(
-                  File(path),
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) {
-                    return Container(
-                      color: Colors.grey[300],
-                      child: const Icon(Icons.broken_image, color: Colors.grey),
-                    );
-                  },
-                ),
-              ),
-
-              // Validation indicator
-              if (result != null)
-                Positioned(
-                  top: 4,
-                  right: 4,
-                  child: Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                      color: result.statusColor.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(4),
+          // Main content
+          SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Main gallery picker card
+                ScaleTransition(
+                  scale: _scaleAnimation,
+                  child: Card(
+                    elevation: 8,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
                     ),
-                    child: Row(
+                    child: InkWell(
+                      onTap: _isProcessing ? null : _pickImageFromGallery,
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: const EdgeInsets.all(32),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              theme.primaryColor,
+                              theme.primaryColor.withOpacity(0.8),
+                            ],
+                          ),
+                        ),
+                        child: Column(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(20),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                Icons.photo_library_rounded,
+                                size: 60,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            const Text(
+                              'Select from Gallery',
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              widget.isBabyMode
+                                  ? 'Choose a baby photo to process'
+                                  : 'Choose a photo that meets DV requirements',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: Colors.white.withOpacity(0.9),
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 30),
+
+                // Quick tips section
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.amber.withOpacity(0.3),
+                      width: 1,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.tips_and_updates,
+                            color: Colors.amber[700],
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Quick Tips',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.amber[700],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      _buildTip('Photo must be in JPEG format'),
+                      _buildTip('File size should be under 240KB'),
+                      _buildTip('Dimensions must be 600x600 pixels'),
+                      if (widget.isBabyMode)
+                        _buildTip('Baby\'s eyes should be open if possible'),
+                    ],
+                  ),
+                ),
+
+                // Recent photos section (if any)
+                if (_recentPhotoPaths.isNotEmpty) ...[
+                  const SizedBox(height: 30),
+                  Text(
+                    'Recent Photos',
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    height: 100,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _recentPhotoPaths.length,
+                      itemBuilder: (context, index) {
+                        final path = _recentPhotoPaths[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 12),
+                          child: InkWell(
+                            onTap: () => _processRecentPhoto(path),
+                            borderRadius: BorderRadius.circular(8),
+                            child: Container(
+                              width: 100,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: theme.primaryColor.withOpacity(0.3),
+                                  width: 2,
+                                ),
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: Image.file(
+                                  File(path),
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) {
+                                    return Container(
+                                      color: Colors.grey[200],
+                                      child: const Icon(
+                                        Icons.broken_image,
+                                        color: Colors.grey,
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+
+          // Processing overlay
+          if (_isProcessing)
+            Container(
+              color: Colors.black.withOpacity(0.7),
+              child: Center(
+                child: Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          result.isValid ? Icons.check : Icons.warning,
-                          color: Colors.white,
-                          size: 12,
-                        ),
-                        const SizedBox(width: 2),
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 20),
                         Text(
-                          '${result.score.toInt()}%',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          _statusMessage.isNotEmpty
+                              ? _statusMessage
+                              : 'Processing...',
+                          style: theme.textTheme.titleMedium,
                         ),
                       ],
                     ),
                   ),
                 ),
-
-              // Selection overlay on long press
-              Positioned.fill(
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () => _showPhotoDetails(path),
-                    onLongPress: () => _deletePhoto(path),
-                  ),
-                ),
               ),
-            ],
-          ),
-        );
-      },
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTip(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('• ', style: TextStyle(fontSize: 12)),
+          Expanded(child: Text(text, style: const TextStyle(fontSize: 13))),
+        ],
+      ),
     );
   }
 }

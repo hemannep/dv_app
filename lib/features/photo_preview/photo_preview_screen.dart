@@ -1,504 +1,559 @@
 // lib/features/photo_preview/photo_preview_screen.dart
 
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:gal/gal.dart'; // CHANGED: Use gal instead of image_gallery_saver
-import 'package:share_plus/share_plus.dart';
+import 'dart:io';
+import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
+import 'package:gal/gal.dart';
+import '../../core/services/enhanced_face_detection_service.dart';
 
 class PhotoPreviewScreen extends StatefulWidget {
   final String imagePath;
-  final Map<String, dynamic>? validationResults;
   final bool isBabyMode;
+  final FaceDetectionResult?
+  detectionResult; // Made optional for backward compatibility
 
   const PhotoPreviewScreen({
     super.key,
     required this.imagePath,
-    this.validationResults,
-    this.isBabyMode = false,
+    required this.isBabyMode,
+    this.detectionResult, // Optional parameter
   });
 
   @override
   State<PhotoPreviewScreen> createState() => _PhotoPreviewScreenState();
 }
 
-class _PhotoPreviewScreenState extends State<PhotoPreviewScreen>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _animationController;
-  late Animation<double> _fadeAnimation;
+class _PhotoPreviewScreenState extends State<PhotoPreviewScreen> {
   bool _isSaving = false;
+  bool _showValidationDetails = false;
+  late File _imageFile;
+  img.Image? _processedImage;
+  FaceDetectionResult? _detectionResult;
+
+  // Validation results
+  Map<String, bool> _validationResults = {};
 
   @override
   void initState() {
     super.initState();
-    _animationController = AnimationController(
-      duration: const Duration(milliseconds: 500),
-      vsync: this,
-    );
-    _fadeAnimation = CurvedAnimation(
-      parent: _animationController,
-      curve: Curves.easeIn,
-    );
-    _animationController.forward();
+    _imageFile = File(widget.imagePath);
+    _detectionResult = widget.detectionResult;
+    _validatePhoto();
   }
 
-  @override
-  void dispose() {
-    _animationController.dispose();
-    super.dispose();
+  Future<void> _validatePhoto() async {
+    // Load and process image
+    final bytes = await _imageFile.readAsBytes();
+    _processedImage = img.decodeImage(bytes);
+
+    if (_processedImage != null) {
+      // If no detection result was provided, perform detection now
+      _detectionResult ??= await EnhancedFaceDetectionService.instance
+          .detectFace(
+            imageSource: _processedImage!,
+            isBabyMode: widget.isBabyMode,
+          );
+
+      // Check DV requirements
+      _validationResults = {
+        'Face Detected': _detectionResult?.faceDetected ?? false,
+        'Good Confidence': (_detectionResult?.confidence ?? 0) >= 0.7,
+        'Proper Size': _detectionResult?.hasOptimalSize ?? false,
+        'Well Positioned': _detectionResult?.isWellPositioned ?? false,
+        'Eyes Open': _detectionResult?.eyesOpen ?? true,
+        'Neutral Expression': _detectionResult?.isNeutralExpression ?? true,
+        'Correct Dimensions':
+            _processedImage!.width == 600 && _processedImage!.height == 600,
+        'File Size OK': bytes.length <= 240 * 1024,
+      };
+
+      setState(() {});
+    }
   }
 
-  Future<void> _saveToGallery() async {
-    setState(() => _isSaving = true);
+  bool get _isPhotoValid {
+    if (widget.isBabyMode) {
+      // More lenient validation for baby mode
+      return _validationResults['Face Detected'] == true &&
+          (_detectionResult?.confidence ?? 0) >= 0.5;
+    } else {
+      // Strict validation for adult mode
+      return _validationResults.values.where((v) => v == false).isEmpty;
+    }
+  }
+
+  // Getter for backward compatibility
+  Map<String, bool> get validationResults => _validationResults;
+
+  Future<void> _processAndSavePhoto() async {
+    if (_processedImage == null) return;
+
+    setState(() {
+      _isSaving = true;
+    });
 
     try {
-      // CHANGED: Use Gal.putImage instead of ImageGallerySaver
-      await Gal.putImage(widget.imagePath);
-      _showSnackBar('Photo saved to gallery successfully!', isSuccess: true);
+      // Ensure correct dimensions (600x600)
+      if (_processedImage!.width != 600 || _processedImage!.height != 600) {
+        _processedImage = img.copyResize(
+          _processedImage!,
+          width: 600,
+          height: 600,
+          interpolation: img.Interpolation.cubic,
+        );
+      }
+
+      // Ensure file size is under 240KB
+      List<int> jpegBytes;
+      int quality = 95;
+
+      do {
+        jpegBytes = img.encodeJpg(_processedImage!, quality: quality);
+        quality -= 5;
+      } while (jpegBytes.length > 240 * 1024 && quality > 50);
+
+      // Save to temporary directory
+      final tempDir = await getTemporaryDirectory();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final processedPath = '${tempDir.path}/dv_photo_$timestamp.jpg';
+      final processedFile = File(processedPath);
+      await processedFile.writeAsBytes(jpegBytes);
+
+      // Check if we have permission to save to gallery
+      final hasAccess = await Gal.hasAccess();
+      if (!hasAccess) {
+        final hasPermission = await Gal.requestAccess();
+        if (!hasPermission) {
+          _showErrorDialog('Permission denied to save to gallery');
+          return;
+        }
+      }
+
+      // Save to gallery using Gal
+      await Gal.putImage(processedFile.path, album: 'DV Photos');
+
+      _showSuccessDialog();
     } catch (e) {
-      _showSnackBar('Error saving photo: $e');
+      print('Error saving photo: $e');
+      _showErrorDialog('Error processing photo: ${e.toString()}');
     } finally {
-      setState(() => _isSaving = false);
+      setState(() {
+        _isSaving = false;
+      });
     }
   }
 
-  Future<void> _sharePhoto() async {
-    try {
-      final File imageFile = File(widget.imagePath);
-      await Share.shareXFiles([
-        XFile(imageFile.path),
-      ], text: 'DV Lottery Photo - Compliant with U.S. requirements');
-    } catch (e) {
-      _showSnackBar('Error sharing photo: $e');
-    }
-  }
-
-  void _showSnackBar(String message, {bool isSuccess = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
+  void _showSuccessDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
           children: [
-            Icon(
-              isSuccess ? Icons.check_circle : Icons.error_outline,
-              color: Colors.white,
-            ),
-            const SizedBox(width: 12),
-            Expanded(child: Text(message)),
+            Icon(Icons.check_circle, color: Colors.green, size: 28),
+            SizedBox(width: 12),
+            Text('Success!'),
           ],
         ),
-        backgroundColor: isSuccess ? Colors.green : Colors.red,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        content: const Text(
+          'Your DV photo has been saved to the gallery. '
+          'You can now use it for your DV lottery application.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context); // Close dialog
+              Navigator.pop(context, true); // Return to camera
+            },
+            child: const Text('OK'),
+          ),
+        ],
       ),
     );
+  }
+
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.error, color: Colors.red, size: 28),
+            SizedBox(width: 12),
+            Text('Error'),
+          ],
+        ),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _retakePhoto() {
+    Navigator.pop(context, false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final bool isValid = widget.validationResults?['isValid'] ?? false;
-    final double score = widget.validationResults?['score'] ?? 0.0;
-
     return Scaffold(
       backgroundColor: Colors.black,
-      body: SafeArea(
-        child: FadeTransition(
-          opacity: _fadeAnimation,
-          child: Column(
-            children: [
-              // Top bar
-              _buildTopBar(),
-
-              // Photo preview
-              Expanded(
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // Photo
-                    _buildPhotoPreview(),
-
-                    // Validation overlay
-                    if (widget.validationResults != null)
-                      _buildValidationOverlay(isValid, score),
-                  ],
-                ),
-              ),
-
-              // Validation details
-              if (widget.validationResults != null) _buildValidationDetails(),
-
-              // Action buttons
-              _buildActionButtons(isValid),
-            ],
-          ),
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: _retakePhoto,
         ),
-      ),
-    );
-  }
-
-  Widget _buildTopBar() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
+        title: const Text(
+          'Review Photo',
+          style: TextStyle(color: Colors.white),
+        ),
+        actions: [
           IconButton(
-            onPressed: () => Navigator.pop(context, 'retake'),
-            icon: const Icon(Icons.arrow_back_ios, color: Colors.white),
-          ),
-          Text(
-            'Photo Preview',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+            icon: Icon(
+              _showValidationDetails ? Icons.visibility_off : Icons.visibility,
               color: Colors.white,
-              fontWeight: FontWeight.bold,
             ),
-          ),
-          IconButton(
-            onPressed: _sharePhoto,
-            icon: const Icon(Icons.share, color: Colors.white),
+            onPressed: () {
+              setState(() {
+                _showValidationDetails = !_showValidationDetails;
+              });
+            },
           ),
         ],
       ),
-    );
-  }
-
-  Widget _buildPhotoPreview() {
-    return Container(
-      margin: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.5),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: AspectRatio(
-          aspectRatio: 1.0,
-          child: Image.file(File(widget.imagePath), fit: BoxFit.cover),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildValidationOverlay(bool isValid, double score) {
-    return Positioned(
-      top: 40,
-      right: 40,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: isValid ? Colors.green : Colors.orange,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: (isValid ? Colors.green : Colors.orange).withOpacity(0.5),
-              blurRadius: 10,
-              spreadRadius: 2,
-            ),
-          ],
-        ),
+      body: SafeArea(
         child: Column(
           children: [
-            Icon(
-              isValid ? Icons.check_circle : Icons.warning,
-              color: Colors.white,
-              size: 32,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              '${score.toStringAsFixed(0)}%',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
+            // Photo preview
+            Expanded(
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  // Photo
+                  Container(
+                    margin: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: _isPhotoValid ? Colors.green : Colors.orange,
+                        width: 3,
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(5),
+                      child: Image.file(_imageFile, fit: BoxFit.contain),
+                    ),
+                  ),
+
+                  // Face detection overlay
+                  if (_detectionResult?.boundingBox != null)
+                    Positioned.fill(
+                      child: Container(
+                        margin: const EdgeInsets.all(20),
+                        child: CustomPaint(
+                          painter: FaceBoundingBoxPainter(
+                            boundingBox: _detectionResult!.boundingBox!,
+                            imageSize: Size(
+                              _processedImage?.width.toDouble() ?? 600,
+                              _processedImage?.height.toDouble() ?? 600,
+                            ),
+                            isValid: _isPhotoValid,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // Validation details overlay
+                  if (_showValidationDetails)
+                    Positioned(
+                      top: 40,
+                      left: 40,
+                      right: 40,
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.8),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Text(
+                              'Validation Results',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            ..._validationResults.entries.map(
+                              (entry) => Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 4,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      entry.value ? Icons.check : Icons.close,
+                                      color: entry.value
+                                          ? Colors.green
+                                          : Colors.red,
+                                      size: 16,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      entry.key,
+                                      style: TextStyle(
+                                        color: entry.value
+                                            ? Colors.green
+                                            : Colors.red,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Confidence: ${((_detectionResult?.confidence ?? 0) * 100).toInt()}%',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
-            Text(
-              isValid ? 'Compliant' : 'Review',
-              style: const TextStyle(color: Colors.white, fontSize: 12),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 
-  Widget _buildValidationDetails() {
-    final details = widget.validationResults?['details'] ?? {};
-    final errors = List<String>.from(widget.validationResults?['errors'] ?? []);
-    final warnings = List<String>.from(
-      widget.validationResults?['warnings'] ?? [],
-    );
-
-    return Container(
-      height: 200,
-      margin: const EdgeInsets.symmetric(horizontal: 20),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.1),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Column(
-        children: [
-          // Handle
-          Container(
-            margin: const EdgeInsets.only(top: 8),
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.3),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-
-          Expanded(
-            child: ListView(
+            // Validation status
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 20),
               padding: const EdgeInsets.all(16),
-              children: [
-                // Requirements check
-                _buildCheckItem(
-                  'Dimensions (600x600)',
-                  details['dimensions']?['valid'] ?? false,
-                  details['dimensions']?['message'],
-                ),
-                _buildCheckItem(
-                  'File Size (<240KB)',
-                  details['fileSize']?['valid'] ?? false,
-                  details['fileSize']?['message'],
-                ),
-                _buildCheckItem(
-                  'Format (JPEG)',
-                  details['format']?['valid'] ?? false,
-                  details['format']?['message'],
-                ),
-                _buildCheckItem(
-                  'Face Detection',
-                  details['face']?['valid'] ?? false,
-                  null,
-                ),
-                _buildCheckItem(
-                  'Background',
-                  details['background']?['valid'] ?? false,
-                  details['background']?['message'],
-                ),
-                _buildCheckItem(
-                  'Lighting',
-                  details['lighting']?['valid'] ?? false,
-                  details['lighting']?['message'],
-                ),
-
-                // Errors
-                if (errors.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Text(
-                    'Issues to Fix:',
-                    style: TextStyle(
-                      color: Colors.red[300],
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  ...errors.map(
-                    (error) => Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.error_outline,
-                            size: 16,
-                            color: Colors.red[300],
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              error,
-                              style: TextStyle(
-                                color: Colors.red[300],
-                                fontSize: 12,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-
-                // Warnings
-                if (warnings.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  Text(
-                    'Suggestions:',
-                    style: TextStyle(
-                      color: Colors.orange[300],
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  ...warnings.map(
-                    (warning) => Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.lightbulb_outline,
-                            size: 16,
-                            color: Colors.orange[300],
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              warning,
-                              style: TextStyle(
-                                color: Colors.orange[300],
-                                fontSize: 12,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildCheckItem(String label, bool isValid, String? message) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Icon(
-            isValid ? Icons.check_circle : Icons.cancel,
-            size: 20,
-            color: isValid ? Colors.green : Colors.red,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                if (message != null && !isValid)
-                  Text(
-                    message,
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.6),
-                      fontSize: 11,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildActionButtons(bool isValid) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.1),
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      child: Row(
-        children: [
-          // Retake button
-          Expanded(
-            child: OutlinedButton(
-              onPressed: () => Navigator.pop(context, 'retake'),
-              style: OutlinedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                side: const BorderSide(color: Colors.white),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
+              decoration: BoxDecoration(
+                color: _isPhotoValid
+                    ? Colors.green.withOpacity(0.1)
+                    : Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: _isPhotoValid ? Colors.green : Colors.orange,
+                  width: 1,
                 ),
               ),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: const [
-                  Icon(Icons.refresh, color: Colors.white),
-                  SizedBox(width: 8),
-                  Text(
-                    'Retake',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
+                children: [
+                  Icon(
+                    _isPhotoValid ? Icons.check_circle : Icons.warning,
+                    color: _isPhotoValid ? Colors.green : Colors.orange,
+                    size: 24,
                   ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(width: 12),
-
-          // Save/Accept button
-          Expanded(
-            flex: 2,
-            child: ElevatedButton(
-              onPressed: _isSaving
-                  ? null
-                  : () async {
-                      await _saveToGallery();
-                      if (mounted) {
-                        Navigator.pop(context, 'accept');
-                      }
-                    },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: isValid ? Colors.green : Colors.orange,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              child: _isSaving
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
-                      ),
-                    )
-                  : Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Icon(
-                          isValid ? Icons.check : Icons.save,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(width: 8),
                         Text(
-                          isValid ? 'Save & Continue' : 'Save Anyway',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
+                          _isPhotoValid
+                              ? 'Photo meets DV requirements'
+                              : widget.isBabyMode
+                              ? 'Photo may need adjustments'
+                              : 'Photo needs improvements',
+                          style: TextStyle(
+                            color: _isPhotoValid ? Colors.green : Colors.orange,
                             fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _detectionResult?.validationMessage ??
+                              'Processing photo...',
+                          style: TextStyle(
+                            color: _isPhotoValid
+                                ? Colors.green.shade700
+                                : Colors.orange.shade700,
+                            fontSize: 14,
                           ),
                         ),
                       ],
                     ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+
+            // Action buttons
+            Container(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                children: [
+                  // Retake button
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _isSaving ? null : _retakePhoto,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Retake'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(width: 16),
+
+                  // Use photo button
+                  Expanded(
+                    flex: 2,
+                    child: ElevatedButton.icon(
+                      onPressed:
+                          (_isPhotoValid || widget.isBabyMode) && !_isSaving
+                          ? _processAndSavePhoto
+                          : null,
+                      icon: _isSaving
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2,
+                              ),
+                            )
+                          : const Icon(Icons.check),
+                      label: Text(
+                        _isSaving ? 'Processing...' : 'Use This Photo',
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: _isPhotoValid
+                            ? Colors.green
+                            : Colors.orange,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
+  }
+}
+
+/// Painter for face bounding box overlay
+class FaceBoundingBoxPainter extends CustomPainter {
+  final Rect boundingBox;
+  final Size imageSize;
+  final bool isValid;
+
+  FaceBoundingBoxPainter({
+    required this.boundingBox,
+    required this.imageSize,
+    required this.isValid,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scaleX = size.width / imageSize.width;
+    final scaleY = size.height / imageSize.height;
+
+    final scaledRect = Rect.fromLTRB(
+      boundingBox.left * scaleX,
+      boundingBox.top * scaleY,
+      boundingBox.right * scaleX,
+      boundingBox.bottom * scaleY,
+    );
+
+    final paint = Paint()
+      ..color = isValid
+          ? Colors.green.withOpacity(0.5)
+          : Colors.orange.withOpacity(0.5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2;
+
+    canvas.drawRect(scaledRect, paint);
+
+    // Draw corner markers
+    final cornerLength = 20.0;
+    final cornerPaint = Paint()
+      ..color = isValid ? Colors.green : Colors.orange
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+
+    // Top-left corner
+    canvas.drawLine(
+      Offset(scaledRect.left, scaledRect.top),
+      Offset(scaledRect.left + cornerLength, scaledRect.top),
+      cornerPaint,
+    );
+    canvas.drawLine(
+      Offset(scaledRect.left, scaledRect.top),
+      Offset(scaledRect.left, scaledRect.top + cornerLength),
+      cornerPaint,
+    );
+
+    // Top-right corner
+    canvas.drawLine(
+      Offset(scaledRect.right - cornerLength, scaledRect.top),
+      Offset(scaledRect.right, scaledRect.top),
+      cornerPaint,
+    );
+    canvas.drawLine(
+      Offset(scaledRect.right, scaledRect.top),
+      Offset(scaledRect.right, scaledRect.top + cornerLength),
+      cornerPaint,
+    );
+
+    // Bottom-left corner
+    canvas.drawLine(
+      Offset(scaledRect.left, scaledRect.bottom - cornerLength),
+      Offset(scaledRect.left, scaledRect.bottom),
+      cornerPaint,
+    );
+    canvas.drawLine(
+      Offset(scaledRect.left, scaledRect.bottom),
+      Offset(scaledRect.left + cornerLength, scaledRect.bottom),
+      cornerPaint,
+    );
+
+    // Bottom-right corner
+    canvas.drawLine(
+      Offset(scaledRect.right, scaledRect.bottom - cornerLength),
+      Offset(scaledRect.right, scaledRect.bottom),
+      cornerPaint,
+    );
+    canvas.drawLine(
+      Offset(scaledRect.right - cornerLength, scaledRect.bottom),
+      Offset(scaledRect.right, scaledRect.bottom),
+      cornerPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(FaceBoundingBoxPainter oldDelegate) {
+    return oldDelegate.boundingBox != boundingBox ||
+        oldDelegate.isValid != isValid;
   }
 }

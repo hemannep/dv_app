@@ -1,18 +1,23 @@
-// lib/screens/camera_screen.dart - Fixed RenderFlex overflow
+// lib/screens/camera_screen.dart
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
-import '../core/services/photo_validation_service.dart';
+import 'dart:io';
+import 'dart:async';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:image/image.dart' as img;
+
+// Import the enhanced face detection service
+import '../core/services/enhanced_face_detection_service.dart';
+import '../widgets/realtime_face_detection_overlay.dart';
 import '../features/photo_preview/photo_preview_screen.dart';
-import '../widgets/camera_guide_overlay.dart';
-import '../widgets/photo_tips_sheet.dart';
-import '../widgets/live_validation_indicator.dart';
 
 class CameraScreen extends StatefulWidget {
   final bool isBabyMode;
 
-  const CameraScreen({super.key, this.isBabyMode = false});
+  const CameraScreen({Key? key, this.isBabyMode = false}) : super(key: key);
 
   @override
   State<CameraScreen> createState() => _CameraScreenState();
@@ -26,57 +31,39 @@ class _CameraScreenState extends State<CameraScreen>
   int _selectedCameraIndex = 0;
 
   // States
+  bool _isInitialized = false;
   bool _isCapturing = false;
+  bool _canCapture = false;
   bool _showGrid = true;
-  final bool _showTips = false;
-  final bool _isProcessing = false;
-  final bool _liveValidation = true;
+  bool _showTips = false;
+
+  // Flash mode
+  FlashMode _flashMode = FlashMode.off;
 
   // Zoom controls
   double _currentZoom = 1.0;
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
 
-  // Flash mode
-  FlashMode _flashMode = FlashMode.off;
-
   // Face detection
-  final FaceDetector _faceDetector = FaceDetector(
-    options: FaceDetectorOptions(
-      enableLandmarks: true,
-      enableContours: true,
-      enableClassification: true,
-      performanceMode: FaceDetectorMode.fast,
-    ),
-  );
-
-  // Validation service
-  late PhotoValidationService _validationService;
-
-  // Live validation results
-  final Map<String, dynamic> _liveValidationResults = {
-    'face_detected': false,
-    'face_centered': false,
-    'face_size_ok': false,
-    'lighting_ok': false,
-    'background_ok': false,
-    'eyes_open': false,
-    'neutral_expression': false,
-  };
+  FaceDetectionResult? _lastDetectionResult;
+  String _validationMessage = 'Position your face in the frame';
 
   // Animation controllers
   late AnimationController _captureAnimationController;
-  late AnimationController _pulseAnimationController;
+  late AnimationController _flashAnimationController;
   late Animation<double> _captureAnimation;
-  late Animation<double> _pulseAnimation;
+  late Animation<double> _flashAnimation;
+
+  // Image picker
+  final ImagePicker _imagePicker = ImagePicker();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeAnimations();
-    _initializeCamera();
-    _validationService = PhotoValidationService();
+    _checkPermissionsAndInitialize();
   }
 
   void _initializeAnimations() {
@@ -85,8 +72,8 @@ class _CameraScreenState extends State<CameraScreen>
       vsync: this,
     );
 
-    _pulseAnimationController = AnimationController(
-      duration: const Duration(milliseconds: 1500),
+    _flashAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 200),
       vsync: this,
     );
 
@@ -97,304 +84,88 @@ class _CameraScreenState extends State<CameraScreen>
       ),
     );
 
-    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.1).animate(
-      CurvedAnimation(
-        parent: _pulseAnimationController,
-        curve: Curves.easeInOut,
-      ),
-    );
-
-    _pulseAnimationController.repeat(reverse: true);
-  }
-
-  // Fixed top controls with proper layout
-  Widget _buildTopControls() {
-    return Positioned(
-      top: MediaQuery.of(context).padding.top + 10,
-      left: 0,
-      right: 0,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20.0),
-        child: Row(
-          children: [
-            // Back button
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.5),
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: IconButton(
-                onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.arrow_back, color: Colors.white),
-              ),
-            ),
-
-            const SizedBox(width: 12),
-
-            // Title
-            Expanded(
-              child: Text(
-                widget.isBabyMode ? 'Baby Photo Mode' : 'DV Photo',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ),
-
-            const SizedBox(width: 12),
-
-            // Control buttons row
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Grid toggle
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: IconButton(
-                    onPressed: () => setState(() => _showGrid = !_showGrid),
-                    icon: Icon(
-                      Icons.grid_3x3,
-                      color: _showGrid ? Colors.white : Colors.white54,
-                    ),
-                  ),
-                ),
-
-                const SizedBox(width: 8),
-
-                // Flash mode
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: IconButton(
-                    onPressed: _toggleFlashMode,
-                    icon: Icon(
-                      _getFlashIcon(),
-                      color: _flashMode == FlashMode.off
-                          ? Colors.white54
-                          : Colors.white,
-                    ),
-                  ),
-                ),
-
-                const SizedBox(width: 8),
-
-                // Tips button
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
-                    borderRadius: BorderRadius.circular(24),
-                  ),
-                  child: IconButton(
-                    onPressed: _showTipsSheet,
-                    icon: const Icon(Icons.help_outline, color: Colors.white),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+    _flashAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _flashAnimationController, curve: Curves.easeOut),
     );
   }
 
-  // Rest of your camera screen methods...
-  Widget _buildBottomControls() {
-    final bool allValidationsPassed = _liveValidationResults.values.every(
-      (result) => result == true,
-    );
+  Future<void> _checkPermissionsAndInitialize() async {
+    final cameraStatus = await Permission.camera.request();
 
-    return Positioned(
-      bottom: 0,
-      left: 0,
-      right: 0,
-      child: Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.bottomCenter,
-            end: Alignment.topCenter,
-            colors: [Colors.black.withOpacity(0.7), Colors.transparent],
-          ),
-        ),
-        child: Column(
-          children: [
-            // Zoom slider
-            if (_maxZoom > _minZoom)
-              Container(
-                margin: const EdgeInsets.only(bottom: 20),
-                child: Row(
-                  children: [
-                    const Icon(Icons.zoom_out, color: Colors.white, size: 20),
-                    Expanded(
-                      child: Slider(
-                        value: _currentZoom,
-                        min: _minZoom,
-                        max: _maxZoom,
-                        activeColor: Colors.white,
-                        inactiveColor: Colors.white30,
-                        onChanged: (value) {
-                          setState(() => _currentZoom = value);
-                          _controller!.setZoomLevel(value);
-                        },
-                      ),
-                    ),
-                    const Icon(Icons.zoom_in, color: Colors.white, size: 20),
-                  ],
-                ),
-              ),
-
-            // Control buttons
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                // Gallery button
-                _buildControlButton(
-                  onPressed: _pickFromGallery,
-                  icon: Icons.photo_library,
-                ),
-
-                // Capture button
-                GestureDetector(
-                  onTap: _isCapturing ? null : _capturePhoto,
-                  child: AnimatedBuilder(
-                    animation: allValidationsPassed
-                        ? _pulseAnimation
-                        : _captureAnimation,
-                    builder: (context, child) {
-                      return Transform.scale(
-                        scale: allValidationsPassed
-                            ? _pulseAnimation.value
-                            : _captureAnimation.value,
-                        child: Container(
-                          width: 80,
-                          height: 80,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: allValidationsPassed
-                                  ? Colors.green
-                                  : Colors.white,
-                              width: 4,
-                            ),
-                            boxShadow: allValidationsPassed
-                                ? [
-                                    BoxShadow(
-                                      color: Colors.green.withOpacity(0.5),
-                                      blurRadius: 20,
-                                      spreadRadius: 5,
-                                    ),
-                                  ]
-                                : null,
-                          ),
-                          child: Container(
-                            margin: const EdgeInsets.all(4),
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: _isCapturing
-                                  ? Colors.grey
-                                  : allValidationsPassed
-                                  ? Colors.green
-                                  : Colors.white,
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-
-                // Switch camera button
-                _buildControlButton(
-                  onPressed: (_cameras?.length ?? 0) > 1 ? _switchCamera : null,
-                  icon: Icons.switch_camera,
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
+    if (cameraStatus.isGranted) {
+      await _initializeCamera();
+    } else {
+      _showPermissionDeniedDialog();
+    }
   }
 
-  Widget _buildControlButton({
-    required VoidCallback? onPressed,
-    required IconData icon,
-  }) {
-    return Container(
-      width: 50,
-      height: 50,
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.2),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
-      ),
-      child: IconButton(
-        onPressed: onPressed,
-        icon: Icon(
-          icon,
-          color: onPressed != null ? Colors.white : Colors.white54,
-          size: 24,
-        ),
-      ),
-    );
-  }
-
-  // Add missing methods
   Future<void> _initializeCamera() async {
     try {
       _cameras = await availableCameras();
-      if (_cameras!.isNotEmpty) {
-        await _selectCamera(_selectedCameraIndex);
+      if (_cameras == null || _cameras!.isEmpty) {
+        _showNoCameraDialog();
+        return;
       }
+
+      // Use front camera by default for selfies
+      _selectedCameraIndex = _cameras!.indexWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.front,
+      );
+
+      if (_selectedCameraIndex == -1) {
+        _selectedCameraIndex = 0; // Fallback to first camera
+      }
+
+      await _setupCameraController();
     } catch (e) {
-      debugPrint('Error initializing camera: $e');
+      print('Error initializing camera: $e');
+      _showCameraErrorDialog();
     }
   }
 
-  Future<void> _selectCamera(int cameraIndex) async {
+  Future<void> _setupCameraController() async {
     if (_cameras == null || _cameras!.isEmpty) return;
 
-    if (_controller != null) {
-      await _controller!.dispose();
-    }
+    final selectedCamera = _cameras![_selectedCameraIndex];
 
     _controller = CameraController(
-      _cameras![cameraIndex],
+      selectedCamera,
       ResolutionPreset.high,
       enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.jpeg,
     );
 
     try {
       await _controller!.initialize();
+
+      // Get zoom levels
       _minZoom = await _controller!.getMinZoomLevel();
       _maxZoom = await _controller!.getMaxZoomLevel();
-      _currentZoom = _minZoom;
 
-      if (mounted) {
-        setState(() {});
-      }
+      // Set initial zoom
+      await _controller!.setZoomLevel(_currentZoom);
+
+      setState(() {
+        _isInitialized = true;
+      });
     } catch (e) {
-      debugPrint('Error selecting camera: $e');
+      print('Error setting up camera controller: $e');
+      _showCameraErrorDialog();
     }
   }
 
-  void _toggleFlashMode() {
+  Future<void> _switchCamera() async {
+    if (_cameras == null || _cameras!.length <= 1) return;
+
+    setState(() {
+      _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras!.length;
+    });
+
+    await _controller?.dispose();
+    await _setupCameraController();
+  }
+
+  Future<void> _toggleFlash() async {
     if (_controller == null) return;
 
     setState(() {
@@ -413,177 +184,225 @@ class _CameraScreenState extends State<CameraScreen>
       }
     });
 
-    _controller!.setFlashMode(_flashMode);
-  }
-
-  IconData _getFlashIcon() {
-    switch (_flashMode) {
-      case FlashMode.off:
-        return Icons.flash_off;
-      case FlashMode.auto:
-        return Icons.flash_auto;
-      case FlashMode.always:
-        return Icons.flash_on;
-      default:
-        return Icons.flash_off;
-    }
-  }
-
-  Future<void> _switchCamera() async {
-    if (_cameras == null || _cameras!.length <= 1) return;
-
-    _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras!.length;
-    await _selectCamera(_selectedCameraIndex);
+    await _controller!.setFlashMode(_flashMode);
   }
 
   Future<void> _capturePhoto() async {
-    if (_controller == null ||
-        !_controller!.value.isInitialized ||
-        _isCapturing) {
-      return;
-    }
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    if (_isCapturing) return;
 
-    setState(() => _isCapturing = true);
+    setState(() {
+      _isCapturing = true;
+    });
 
     try {
+      // Trigger capture animation
       _captureAnimationController.forward().then((_) {
         _captureAnimationController.reverse();
       });
 
+      // Flash animation if flash is on
+      if (_flashMode == FlashMode.always) {
+        _flashAnimationController.forward().then((_) {
+          _flashAnimationController.reverse();
+        });
+      }
+
+      // Haptic feedback
+      HapticFeedback.mediumImpact();
+
+      // Add a small delay to prevent rapid captures
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      // Capture the photo
       final XFile photo = await _controller!.takePicture();
 
-      // Process the photo and navigate to preview
-      if (mounted) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => PhotoPreviewScreen(
-              imagePath: photo.path,
-              isBabyMode: widget.isBabyMode,
+      // Process and validate the photo
+      final File imageFile = File(photo.path);
+      final bytes = await imageFile.readAsBytes();
+      final image = img.decodeImage(bytes);
+
+      if (image != null) {
+        // Perform face detection on captured image
+        final detectionResult = await EnhancedFaceDetectionService.instance
+            .detectFace(imageSource: image, isBabyMode: widget.isBabyMode);
+
+        // Navigate to preview screen
+        if (mounted) {
+          final result = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PhotoPreviewScreen(
+                imagePath: photo.path,
+                isBabyMode: widget.isBabyMode,
+                detectionResult: detectionResult,
+              ),
             ),
-          ),
-        );
+          );
+
+          // If user approved the photo, close camera screen
+          if (result == true && mounted) {
+            Navigator.pop(context, photo.path);
+          }
+        }
       }
     } catch (e) {
-      debugPrint('Error capturing photo: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error capturing photo: $e')));
+      print('Error capturing photo: $e');
+      if (e.toString().contains('Previous capture has not returned yet')) {
+        // Ignore this specific error as it's handled by the _isCapturing flag
+        print('Capture already in progress, ignoring...');
+      } else {
+        _showCaptureErrorDialog();
       }
     } finally {
-      setState(() => _isCapturing = false);
+      // Add a delay before allowing next capture
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (mounted) {
+        setState(() {
+          _isCapturing = false;
+        });
+      }
     }
   }
 
   Future<void> _pickFromGallery() async {
-    final ImagePicker picker = ImagePicker();
-
     try {
-      final XFile? image = await picker.pickImage(
+      final XFile? photo = await _imagePicker.pickImage(
         source: ImageSource.gallery,
         imageQuality: 100,
       );
 
-      if (image != null && mounted) {
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => PhotoPreviewScreen(
-              imagePath: image.path,
-              isBabyMode: widget.isBabyMode,
+      if (photo != null) {
+        // Process and validate the photo
+        final File imageFile = File(photo.path);
+        final bytes = await imageFile.readAsBytes();
+        final image = img.decodeImage(bytes);
+
+        if (image != null) {
+          // Perform face detection
+          final detectionResult = await EnhancedFaceDetectionService.instance
+              .detectFace(imageSource: image, isBabyMode: widget.isBabyMode);
+
+          // Navigate to preview screen
+          final result = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PhotoPreviewScreen(
+                imagePath: photo.path,
+                isBabyMode: widget.isBabyMode,
+                detectionResult: detectionResult,
+              ),
             ),
-          ),
-        );
+          );
+
+          if (result == true && mounted) {
+            Navigator.pop(context, photo.path);
+          }
+        }
       }
     } catch (e) {
-      debugPrint('Error picking from gallery: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error picking image: $e')));
-      }
+      print('Error picking from gallery: $e');
     }
   }
 
-  void _showTipsSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => PhotoTipsSheet(isBabyMode: widget.isBabyMode),
-    );
+  void _handleDetectionResult(FaceDetectionResult result) {
+    setState(() {
+      _lastDetectionResult = result;
+      _canCapture = result.isValid;
+      _validationMessage = result.validationMessage;
+    });
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          // Camera preview
-          _buildCameraPreview(),
+  void _toggleGrid() {
+    setState(() {
+      _showGrid = !_showGrid;
+    });
+  }
 
-          // Overlays
-          if (_showGrid && (_controller?.value.isInitialized ?? false))
-            CameraGuideOverlay(
-              isBabyMode: widget.isBabyMode,
-              showGrid: _showGrid,
-            ),
+  void _toggleTips() {
+    setState(() {
+      _showTips = !_showTips;
+    });
+  }
 
-          // Live validation indicators
-          if (_liveValidation && (_controller?.value.isInitialized ?? false))
-            LiveValidationIndicator(
-              validationResults: _liveValidationResults,
-              isBabyMode: widget.isBabyMode,
-            ),
-
-          // Top controls
-          _buildTopControls(),
-
-          // Bottom controls
-          _buildBottomControls(),
+  void _showPermissionDeniedDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Camera Permission Required'),
+        content: const Text(
+          'This app needs camera permission to capture DV photos. '
+          'Please grant camera permission in settings.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              openAppSettings();
+            },
+            child: const Text('Open Settings'),
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildCameraPreview() {
-    if (_controller == null || !_controller!.value.isInitialized) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(color: Colors.white),
-            SizedBox(height: 20),
-            Text(
-              'Initializing camera...',
-              style: TextStyle(color: Colors.white),
-            ),
-          ],
+  void _showNoCameraDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('No Camera Found'),
+        content: const Text(
+          'No camera was detected on this device. '
+          'Please ensure your device has a working camera.',
         ),
-      );
-    }
-
-    return GestureDetector(
-      onScaleUpdate: (details) {
-        final double newZoom = (_currentZoom * details.scale).clamp(
-          _minZoom,
-          _maxZoom,
-        );
-        if (newZoom != _currentZoom) {
-          setState(() => _currentZoom = newZoom);
-          _controller!.setZoomLevel(_currentZoom);
-        }
-      },
-      child: Center(
-        child: AspectRatio(
-          aspectRatio: 1.0,
-          child: ClipRect(
-            child: Transform.scale(
-              scale: 1.0,
-              child: Center(child: CameraPreview(_controller!)),
-            ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
           ),
+        ],
+      ),
+    );
+  }
+
+  void _showCameraErrorDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Camera Error'),
+        content: const Text(
+          'An error occurred while initializing the camera. '
+          'Please restart the app and try again.',
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showCaptureErrorDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Capture Error'),
+        content: const Text('Failed to capture photo. Please try again.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
       ),
     );
   }
@@ -592,9 +411,445 @@ class _CameraScreenState extends State<CameraScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
-    _faceDetector.close();
     _captureAnimationController.dispose();
-    _pulseAnimationController.dispose();
+    _flashAnimationController.dispose();
     super.dispose();
   }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive) {
+      _controller?.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _setupCameraController();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Camera preview
+            if (_isInitialized && _controller != null)
+              Center(
+                child: AspectRatio(
+                  aspectRatio: 1.0, // Square aspect ratio for DV photos
+                  child: ClipRect(
+                    child: Transform.scale(
+                      scale: 1 / (_controller!.value.aspectRatio),
+                      child: Center(child: CameraPreview(_controller!)),
+                    ),
+                  ),
+                ),
+              )
+            else
+              const Center(
+                child: CircularProgressIndicator(color: Colors.white),
+              ),
+
+            // Flash animation overlay
+            if (_flashMode == FlashMode.always)
+              AnimatedBuilder(
+                animation: _flashAnimation,
+                builder: (context, child) {
+                  return Container(
+                    color: Colors.white.withOpacity(
+                      _flashAnimation.value * 0.8,
+                    ),
+                  );
+                },
+              ),
+
+            // Face detection overlay
+            if (_isInitialized && _controller != null)
+              RealtimeFaceDetectionOverlay(
+                cameraController: _controller,
+                isBabyMode: widget.isBabyMode,
+                onDetectionResult: _handleDetectionResult,
+                onCapture: _capturePhoto,
+              ),
+
+            // Grid overlay
+            if (_showGrid) CustomPaint(painter: GridPainter()),
+
+            // Top controls
+            Positioned(
+              top: 20,
+              left: 20,
+              right: 20,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Close button
+                  IconButton(
+                    icon: const Icon(
+                      Icons.close,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+
+                  // Mode indicator
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: widget.isBabyMode
+                          ? Colors.pink.withOpacity(0.3)
+                          : Colors.blue.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: widget.isBabyMode ? Colors.pink : Colors.blue,
+                        width: 1,
+                      ),
+                    ),
+                    child: Text(
+                      widget.isBabyMode ? 'Baby Mode' : 'Adult Mode',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+
+                  // Settings menu
+                  PopupMenuButton<String>(
+                    icon: const Icon(
+                      Icons.more_vert,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                    onSelected: (value) {
+                      switch (value) {
+                        case 'grid':
+                          _toggleGrid();
+                          break;
+                        case 'tips':
+                          _toggleTips();
+                          break;
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: 'grid',
+                        child: Row(
+                          children: [
+                            Icon(
+                              _showGrid ? Icons.grid_off : Icons.grid_on,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 12),
+                            Text(_showGrid ? 'Hide Grid' : 'Show Grid'),
+                          ],
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'tips',
+                        child: Row(
+                          children: [
+                            Icon(Icons.lightbulb_outline, size: 20),
+                            SizedBox(width: 12),
+                            Text('Photo Tips'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            // Bottom controls
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [Colors.black.withOpacity(0.8), Colors.transparent],
+                  ),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Validation message
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      margin: const EdgeInsets.only(bottom: 20),
+                      decoration: BoxDecoration(
+                        color: _canCapture
+                            ? Colors.green.withOpacity(0.9)
+                            : Colors.orange.withOpacity(0.9),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        _validationMessage,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+
+                    // Camera controls row
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // Gallery button
+                        IconButton(
+                          icon: const Icon(Icons.photo_library_rounded),
+                          iconSize: 32,
+                          color: Colors.white,
+                          onPressed: _pickFromGallery,
+                        ),
+
+                        // Flash button
+                        IconButton(
+                          icon: Icon(
+                            _flashMode == FlashMode.off
+                                ? Icons.flash_off
+                                : _flashMode == FlashMode.auto
+                                ? Icons.flash_auto
+                                : Icons.flash_on,
+                          ),
+                          iconSize: 32,
+                          color: Colors.white,
+                          onPressed: _toggleFlash,
+                        ),
+
+                        // Capture button
+                        GestureDetector(
+                          onTap: _canCapture && !_isCapturing
+                              ? _capturePhoto
+                              : null,
+                          child: AnimatedBuilder(
+                            animation: _captureAnimation,
+                            builder: (context, child) {
+                              return Transform.scale(
+                                scale: _captureAnimation.value,
+                                child: Container(
+                                  width: 72,
+                                  height: 72,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.white.withOpacity(
+                                      _canCapture ? 1.0 : 0.3,
+                                    ),
+                                    border: Border.all(
+                                      color: _canCapture
+                                          ? Colors.white
+                                          : Colors.grey,
+                                      width: 4,
+                                    ),
+                                    boxShadow: _canCapture
+                                        ? [
+                                            BoxShadow(
+                                              color: Colors.white.withOpacity(
+                                                0.3,
+                                              ),
+                                              blurRadius: 10,
+                                              spreadRadius: 2,
+                                            ),
+                                          ]
+                                        : [],
+                                  ),
+                                  child: _isCapturing
+                                      ? const Padding(
+                                          padding: EdgeInsets.all(20),
+                                          child: CircularProgressIndicator(
+                                            color: Colors.black,
+                                            strokeWidth: 3,
+                                          ),
+                                        )
+                                      : Icon(
+                                          Icons.camera,
+                                          color: _canCapture
+                                              ? Colors.black
+                                              : Colors.grey,
+                                          size: 32,
+                                        ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+
+                        // Switch camera button
+                        IconButton(
+                          icon: const Icon(Icons.flip_camera_android),
+                          iconSize: 32,
+                          color: Colors.white,
+                          onPressed: _cameras != null && _cameras!.length > 1
+                              ? _switchCamera
+                              : null,
+                        ),
+
+                        // Tips button
+                        IconButton(
+                          icon: const Icon(Icons.info_outline),
+                          iconSize: 32,
+                          color: Colors.white,
+                          onPressed: _toggleTips,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // Tips overlay
+            if (_showTips)
+              Positioned.fill(
+                child: GestureDetector(
+                  onTap: _toggleTips,
+                  child: Container(
+                    color: Colors.black.withOpacity(0.8),
+                    child: Center(
+                      child: Container(
+                        margin: const EdgeInsets.all(32),
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  widget.isBabyMode
+                                      ? 'Baby Photo Tips'
+                                      : 'DV Photo Tips',
+                                  style: const TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.close),
+                                  onPressed: _toggleTips,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            ..._getTips().map(
+                              (tip) => Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 8,
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Icon(
+                                      Icons.check_circle,
+                                      color: Colors.green,
+                                      size: 20,
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Text(
+                                        tip,
+                                        style: const TextStyle(fontSize: 14),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<String> _getTips() {
+    if (widget.isBabyMode) {
+      return [
+        'Lay baby on a plain white surface',
+        'Ensure baby\'s eyes are open if possible',
+        'Support baby\'s head to face camera',
+        'Use soft, even lighting',
+        'Remove pacifiers and toys from view',
+        'Take multiple photos for best results',
+      ];
+    } else {
+      return [
+        'Face the camera directly',
+        'Maintain neutral expression',
+        'Keep eyes open and visible',
+        'Use plain white or light background',
+        'Ensure even lighting without shadows',
+        'Remove glasses if they cause glare',
+        'Keep head straight, not tilted',
+        'Face should fill 50-70% of frame',
+      ];
+    }
+  }
+}
+
+/// Grid painter for camera overlay
+class GridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.3)
+      ..strokeWidth = 1
+      ..style = PaintingStyle.stroke;
+
+    // Draw vertical lines
+    final verticalSpacing = size.width / 3;
+    for (int i = 1; i < 3; i++) {
+      canvas.drawLine(
+        Offset(verticalSpacing * i, 0),
+        Offset(verticalSpacing * i, size.height),
+        paint,
+      );
+    }
+
+    // Draw horizontal lines
+    final horizontalSpacing = size.height / 3;
+    for (int i = 1; i < 3; i++) {
+      canvas.drawLine(
+        Offset(0, horizontalSpacing * i),
+        Offset(size.width, horizontalSpacing * i),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(GridPainter oldDelegate) => false;
 }

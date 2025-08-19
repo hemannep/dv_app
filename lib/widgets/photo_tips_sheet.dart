@@ -1,6 +1,5 @@
 // lib/widgets/photo_tips_sheet.dart - Fixed missing assets
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class PhotoTipsSheet extends StatelessWidget {
   final bool isBabyMode;
