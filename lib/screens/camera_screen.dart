@@ -1,23 +1,19 @@
 // lib/screens/camera_screen.dart
-
+import 'dart:async';
+import 'dart:io';
+import 'dart:ui';
+import 'package:dvapp/features/photo_preview/photo_preview_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
-import 'package:image_picker/image_picker.dart';
-import 'dart:io';
-import 'dart:async';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:image/image.dart' as img;
-
-// Import the enhanced face detection service
 import '../core/services/enhanced_face_detection_service.dart';
 import '../widgets/realtime_face_detection_overlay.dart';
-import '../features/photo_preview/photo_preview_screen.dart';
 
 class CameraScreen extends StatefulWidget {
   final bool isBabyMode;
 
-  const CameraScreen({Key? key, this.isBabyMode = false}) : super(key: key);
+  const CameraScreen({super.key, this.isBabyMode = false});
 
   @override
   State<CameraScreen> createState() => _CameraScreenState();
@@ -25,45 +21,38 @@ class CameraScreen extends StatefulWidget {
 
 class _CameraScreenState extends State<CameraScreen>
     with WidgetsBindingObserver, TickerProviderStateMixin {
-  // Camera controllers
   CameraController? _controller;
   List<CameraDescription>? _cameras;
   int _selectedCameraIndex = 0;
-
-  // States
   bool _isInitialized = false;
   bool _isCapturing = false;
-  bool _canCapture = false;
-  bool _showGrid = true;
-  bool _showTips = false;
-
-  // Flash mode
+  bool _isCameraReady = false;
   FlashMode _flashMode = FlashMode.off;
-
-  // Zoom controls
-  double _currentZoom = 1.0;
   double _minZoom = 1.0;
   double _maxZoom = 1.0;
-
-  // Face detection
-  FaceDetectionResult? _lastDetectionResult;
-  String _validationMessage = 'Position your face in the frame';
+  double _currentZoom = 1.0;
 
   // Animation controllers
   late AnimationController _captureAnimationController;
   late AnimationController _flashAnimationController;
+  late AnimationController _gridAnimationController;
   late Animation<double> _captureAnimation;
   late Animation<double> _flashAnimation;
+  late Animation<double> _gridAnimation;
 
-  // Image picker
-  final ImagePicker _imagePicker = ImagePicker();
+  // UI State
+  bool _showGrid = false;
+  bool _showFaceGuide = true;
+
+  // Capture management
+  Timer? _captureDelayTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _initializeAnimations();
-    _checkPermissionsAndInitialize();
+    _initializeCamera();
   }
 
   void _initializeAnimations() {
@@ -77,7 +66,12 @@ class _CameraScreenState extends State<CameraScreen>
       vsync: this,
     );
 
-    _captureAnimation = Tween<double>(begin: 1.0, end: 0.8).animate(
+    _gridAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 300),
+      vsync: this,
+    );
+
+    _captureAnimation = Tween<double>(begin: 1.0, end: 0.85).animate(
       CurvedAnimation(
         parent: _captureAnimationController,
         curve: Curves.easeInOut,
@@ -87,43 +81,44 @@ class _CameraScreenState extends State<CameraScreen>
     _flashAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _flashAnimationController, curve: Curves.easeOut),
     );
-  }
 
-  Future<void> _checkPermissionsAndInitialize() async {
-    final cameraStatus = await Permission.camera.request();
-
-    if (cameraStatus.isGranted) {
-      await _initializeCamera();
-    } else {
-      _showPermissionDeniedDialog();
-    }
+    _gridAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _gridAnimationController,
+        curve: Curves.easeInOut,
+      ),
+    );
   }
 
   Future<void> _initializeCamera() async {
     try {
       _cameras = await availableCameras();
+
       if (_cameras == null || _cameras!.isEmpty) {
         _showNoCameraDialog();
         return;
       }
 
-      // Use front camera by default for selfies
-      _selectedCameraIndex = _cameras!.indexWhere(
+      // Find front camera for selfie mode
+      final frontCameraIndex = _cameras!.indexWhere(
         (camera) => camera.lensDirection == CameraLensDirection.front,
       );
 
-      if (_selectedCameraIndex == -1) {
-        _selectedCameraIndex = 0; // Fallback to first camera
-      }
+      _selectedCameraIndex = frontCameraIndex != -1 ? frontCameraIndex : 0;
 
       await _setupCameraController();
     } catch (e) {
-      print('Error initializing camera: $e');
+      print('Camera initialization error: $e');
       _showCameraErrorDialog();
     }
   }
 
   Future<void> _setupCameraController() async {
+    if (_controller != null) {
+      await _controller!.dispose();
+      _controller = null;
+    }
+
     if (_cameras == null || _cameras!.isEmpty) return;
 
     final selectedCamera = _cameras![_selectedCameraIndex];
@@ -132,41 +127,136 @@ class _CameraScreenState extends State<CameraScreen>
       selectedCamera,
       ResolutionPreset.high,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
+      imageFormatGroup: ImageFormatGroup.jpeg, // Use JPEG for compatibility
     );
 
     try {
       await _controller!.initialize();
 
-      // Get zoom levels
+      if (!mounted) return;
+
       _minZoom = await _controller!.getMinZoomLevel();
       _maxZoom = await _controller!.getMaxZoomLevel();
-
-      // Set initial zoom
       await _controller!.setZoomLevel(_currentZoom);
 
       setState(() {
         _isInitialized = true;
+        _isCameraReady = true;
       });
     } catch (e) {
       print('Error setting up camera controller: $e');
-      _showCameraErrorDialog();
+      if (mounted) {
+        _showCameraErrorDialog();
+      }
     }
   }
 
-  Future<void> _switchCamera() async {
-    if (_cameras == null || _cameras!.length <= 1) return;
+  Future<void> _capturePhoto() async {
+    if (_controller == null ||
+        !_controller!.value.isInitialized ||
+        !_isCameraReady ||
+        _isCapturing) {
+      return;
+    }
 
     setState(() {
-      _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras!.length;
+      _isCapturing = true;
     });
 
-    await _controller?.dispose();
-    await _setupCameraController();
+    try {
+      // Animations
+      _captureAnimationController.forward().then((_) {
+        _captureAnimationController.reverse();
+      });
+
+      if (_flashMode == FlashMode.always) {
+        _flashAnimationController.forward().then((_) {
+          Future.delayed(const Duration(milliseconds: 100), () {
+            _flashAnimationController.reverse();
+          });
+        });
+      }
+
+      HapticFeedback.mediumImpact();
+
+      // Set flash mode
+      await _controller!.setFlashMode(_flashMode);
+
+      // Take picture
+      final XFile photo = await _controller!.takePicture();
+
+      // Process the captured image
+      if (mounted) {
+        await _processPhoto(photo);
+      }
+    } catch (e) {
+      print('Capture error: $e');
+      if (mounted && !e.toString().contains('Previous capture')) {
+        _showCaptureErrorDialog();
+      }
+    } finally {
+      _captureDelayTimer?.cancel();
+      _captureDelayTimer = Timer(const Duration(milliseconds: 800), () {
+        if (mounted) {
+          setState(() {
+            _isCapturing = false;
+          });
+        }
+      });
+    }
+  }
+
+  Future<void> _processPhoto(XFile photo) async {
+    try {
+      final File imageFile = File(photo.path);
+      final bytes = await imageFile.readAsBytes();
+      final image = img.decodeImage(bytes);
+
+      if (image != null) {
+        final detectionResult = await EnhancedFaceDetectionService.instance
+            .detectFace(imageSource: image, isBabyMode: widget.isBabyMode);
+
+        if (mounted) {
+          final result = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PhotoPreviewScreen(
+                imagePath: photo.path,
+                isBabyMode: widget.isBabyMode,
+                detectionResult: detectionResult,
+              ),
+            ),
+          );
+
+          if (result == true && mounted) {
+            Navigator.pop(context, photo.path);
+          }
+        }
+      }
+    } catch (e) {
+      print('Photo processing error: $e');
+    }
+  }
+
+  void _toggleGrid() {
+    setState(() {
+      _showGrid = !_showGrid;
+    });
+    if (_showGrid) {
+      _gridAnimationController.forward();
+    } else {
+      _gridAnimationController.reverse();
+    }
+  }
+
+  void _toggleFaceGuide() {
+    setState(() {
+      _showFaceGuide = !_showFaceGuide;
+    });
   }
 
   Future<void> _toggleFlash() async {
-    if (_controller == null) return;
+    if (_controller == null || !_controller!.value.isInitialized) return;
 
     setState(() {
       switch (_flashMode) {
@@ -184,172 +274,22 @@ class _CameraScreenState extends State<CameraScreen>
       }
     });
 
-    await _controller!.setFlashMode(_flashMode);
-  }
-
-  Future<void> _capturePhoto() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-    if (_isCapturing) return;
-
-    setState(() {
-      _isCapturing = true;
-    });
-
     try {
-      // Trigger capture animation
-      _captureAnimationController.forward().then((_) {
-        _captureAnimationController.reverse();
-      });
-
-      // Flash animation if flash is on
-      if (_flashMode == FlashMode.always) {
-        _flashAnimationController.forward().then((_) {
-          _flashAnimationController.reverse();
-        });
-      }
-
-      // Haptic feedback
-      HapticFeedback.mediumImpact();
-
-      // Add a small delay to prevent rapid captures
-      await Future.delayed(const Duration(milliseconds: 100));
-
-      // Capture the photo
-      final XFile photo = await _controller!.takePicture();
-
-      // Process and validate the photo
-      final File imageFile = File(photo.path);
-      final bytes = await imageFile.readAsBytes();
-      final image = img.decodeImage(bytes);
-
-      if (image != null) {
-        // Perform face detection on captured image
-        final detectionResult = await EnhancedFaceDetectionService.instance
-            .detectFace(imageSource: image, isBabyMode: widget.isBabyMode);
-
-        // Navigate to preview screen
-        if (mounted) {
-          final result = await Navigator.push<bool>(
-            context,
-            MaterialPageRoute(
-              builder: (context) => PhotoPreviewScreen(
-                imagePath: photo.path,
-                isBabyMode: widget.isBabyMode,
-                detectionResult: detectionResult,
-              ),
-            ),
-          );
-
-          // If user approved the photo, close camera screen
-          if (result == true && mounted) {
-            Navigator.pop(context, photo.path);
-          }
-        }
-      }
+      await _controller!.setFlashMode(_flashMode);
     } catch (e) {
-      print('Error capturing photo: $e');
-      if (e.toString().contains('Previous capture has not returned yet')) {
-        // Ignore this specific error as it's handled by the _isCapturing flag
-        print('Capture already in progress, ignoring...');
-      } else {
-        _showCaptureErrorDialog();
-      }
-    } finally {
-      // Add a delay before allowing next capture
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (mounted) {
-        setState(() {
-          _isCapturing = false;
-        });
-      }
+      print('Error setting flash mode: $e');
     }
   }
 
-  Future<void> _pickFromGallery() async {
-    try {
-      final XFile? photo = await _imagePicker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 100,
-      );
+  Future<void> _switchCamera() async {
+    if (_cameras == null || _cameras!.length <= 1 || _isCapturing) return;
 
-      if (photo != null) {
-        // Process and validate the photo
-        final File imageFile = File(photo.path);
-        final bytes = await imageFile.readAsBytes();
-        final image = img.decodeImage(bytes);
-
-        if (image != null) {
-          // Perform face detection
-          final detectionResult = await EnhancedFaceDetectionService.instance
-              .detectFace(imageSource: image, isBabyMode: widget.isBabyMode);
-
-          // Navigate to preview screen
-          final result = await Navigator.push<bool>(
-            context,
-            MaterialPageRoute(
-              builder: (context) => PhotoPreviewScreen(
-                imagePath: photo.path,
-                isBabyMode: widget.isBabyMode,
-                detectionResult: detectionResult,
-              ),
-            ),
-          );
-
-          if (result == true && mounted) {
-            Navigator.pop(context, photo.path);
-          }
-        }
-      }
-    } catch (e) {
-      print('Error picking from gallery: $e');
-    }
-  }
-
-  void _handleDetectionResult(FaceDetectionResult result) {
     setState(() {
-      _lastDetectionResult = result;
-      _canCapture = result.isValid;
-      _validationMessage = result.validationMessage;
+      _selectedCameraIndex = (_selectedCameraIndex + 1) % _cameras!.length;
+      _isCameraReady = false;
     });
-  }
 
-  void _toggleGrid() {
-    setState(() {
-      _showGrid = !_showGrid;
-    });
-  }
-
-  void _toggleTips() {
-    setState(() {
-      _showTips = !_showTips;
-    });
-  }
-
-  void _showPermissionDeniedDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('Camera Permission Required'),
-        content: const Text(
-          'This app needs camera permission to capture DV photos. '
-          'Please grant camera permission in settings.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              openAppSettings();
-            },
-            child: const Text('Open Settings'),
-          ),
-        ],
-      ),
-    );
+    await _setupCameraController();
   }
 
   void _showNoCameraDialog() {
@@ -358,13 +298,13 @@ class _CameraScreenState extends State<CameraScreen>
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: const Text('No Camera Found'),
-        content: const Text(
-          'No camera was detected on this device. '
-          'Please ensure your device has a working camera.',
-        ),
+        content: const Text('Please ensure your device has a working camera.'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.pop(context);
+            },
             child: const Text('OK'),
           ),
         ],
@@ -377,10 +317,7 @@ class _CameraScreenState extends State<CameraScreen>
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Camera Error'),
-        content: const Text(
-          'An error occurred while initializing the camera. '
-          'Please restart the app and try again.',
-        ),
+        content: const Text('An error occurred. Please restart the app.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -408,419 +345,519 @@ class _CameraScreenState extends State<CameraScreen>
   }
 
   @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _controller?.dispose();
-    _captureAnimationController.dispose();
-    _flashAnimationController.dispose();
-    super.dispose();
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+
+    switch (state) {
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+        _isCameraReady = false;
+        break;
+      case AppLifecycleState.resumed:
+        _setupCameraController();
+        break;
+      default:
+        break;
+    }
   }
 
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_controller == null || !_controller!.value.isInitialized) {
-      return;
-    }
-
-    if (state == AppLifecycleState.inactive) {
-      _controller?.dispose();
-    } else if (state == AppLifecycleState.resumed) {
-      _setupCameraController();
-    }
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _captureDelayTimer?.cancel();
+    _controller?.dispose();
+    _captureAnimationController.dispose();
+    _flashAnimationController.dispose();
+    _gridAnimationController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Camera preview
-            if (_isInitialized && _controller != null)
-              Center(
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Camera preview
+          if (_isInitialized &&
+              _controller != null &&
+              _controller!.value.isInitialized)
+            Center(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
                 child: AspectRatio(
-                  aspectRatio: 1.0, // Square aspect ratio for DV photos
-                  child: ClipRect(
-                    child: Transform.scale(
-                      scale: 1 / (_controller!.value.aspectRatio),
-                      child: Center(child: CameraPreview(_controller!)),
-                    ),
+                  aspectRatio: 1.0, // Square for DV photos
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Transform.scale(
+                        scale: _controller!.value.aspectRatio,
+                        child: Center(child: CameraPreview(_controller!)),
+                      ),
+
+                      // Grid overlay
+                      if (_showGrid)
+                        FadeTransition(
+                          opacity: _gridAnimation,
+                          child: CustomPaint(painter: GridPainter()),
+                        ),
+                    ],
                   ),
                 ),
-              )
-            else
-              const Center(
-                child: CircularProgressIndicator(color: Colors.white),
               ),
-
-            // Flash animation overlay
-            if (_flashMode == FlashMode.always)
-              AnimatedBuilder(
-                animation: _flashAnimation,
-                builder: (context, child) {
-                  return Container(
-                    color: Colors.white.withOpacity(
-                      _flashAnimation.value * 0.8,
-                    ),
-                  );
-                },
-              ),
-
-            // Face detection overlay
-            if (_isInitialized && _controller != null)
-              RealtimeFaceDetectionOverlay(
-                cameraController: _controller,
-                isBabyMode: widget.isBabyMode,
-                onDetectionResult: _handleDetectionResult,
-                onCapture: _capturePhoto,
-              ),
-
-            // Grid overlay
-            if (_showGrid) CustomPaint(painter: GridPainter()),
-
-            // Top controls
-            Positioned(
-              top: 20,
-              left: 20,
-              right: 20,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            )
+          else
+            const Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Close button
-                  IconButton(
-                    icon: const Icon(
-                      Icons.close,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-
-                  // Mode indicator
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: widget.isBabyMode
-                          ? Colors.pink.withOpacity(0.3)
-                          : Colors.blue.withOpacity(0.3),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: widget.isBabyMode ? Colors.pink : Colors.blue,
-                        width: 1,
-                      ),
-                    ),
-                    child: Text(
-                      widget.isBabyMode ? 'Baby Mode' : 'Adult Mode',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-
-                  // Settings menu
-                  PopupMenuButton<String>(
-                    icon: const Icon(
-                      Icons.more_vert,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                    onSelected: (value) {
-                      switch (value) {
-                        case 'grid':
-                          _toggleGrid();
-                          break;
-                        case 'tips':
-                          _toggleTips();
-                          break;
-                      }
-                    },
-                    itemBuilder: (context) => [
-                      PopupMenuItem(
-                        value: 'grid',
-                        child: Row(
-                          children: [
-                            Icon(
-                              _showGrid ? Icons.grid_off : Icons.grid_on,
-                              size: 20,
-                            ),
-                            const SizedBox(width: 12),
-                            Text(_showGrid ? 'Hide Grid' : 'Show Grid'),
-                          ],
-                        ),
-                      ),
-                      const PopupMenuItem(
-                        value: 'tips',
-                        child: Row(
-                          children: [
-                            Icon(Icons.lightbulb_outline, size: 20),
-                            SizedBox(width: 12),
-                            Text('Photo Tips'),
-                          ],
-                        ),
-                      ),
-                    ],
+                  CircularProgressIndicator(color: Colors.white),
+                  SizedBox(height: 20),
+                  Text(
+                    'Initializing Camera...',
+                    style: TextStyle(color: Colors.white, fontSize: 16),
                   ),
                 ],
               ),
             ),
 
-            // Bottom controls
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [Colors.black.withOpacity(0.8), Colors.transparent],
-                  ),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Validation message
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 300),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      margin: const EdgeInsets.only(bottom: 20),
-                      decoration: BoxDecoration(
-                        color: _canCapture
-                            ? Colors.green.withOpacity(0.9)
-                            : Colors.orange.withOpacity(0.9),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        _validationMessage,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-
-                    // Camera controls row
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        // Gallery button
-                        IconButton(
-                          icon: const Icon(Icons.photo_library_rounded),
-                          iconSize: 32,
-                          color: Colors.white,
-                          onPressed: _pickFromGallery,
-                        ),
-
-                        // Flash button
-                        IconButton(
-                          icon: Icon(
-                            _flashMode == FlashMode.off
-                                ? Icons.flash_off
-                                : _flashMode == FlashMode.auto
-                                ? Icons.flash_auto
-                                : Icons.flash_on,
-                          ),
-                          iconSize: 32,
-                          color: Colors.white,
-                          onPressed: _toggleFlash,
-                        ),
-
-                        // Capture button
-                        GestureDetector(
-                          onTap: _canCapture && !_isCapturing
-                              ? _capturePhoto
-                              : null,
-                          child: AnimatedBuilder(
-                            animation: _captureAnimation,
-                            builder: (context, child) {
-                              return Transform.scale(
-                                scale: _captureAnimation.value,
-                                child: Container(
-                                  width: 72,
-                                  height: 72,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: Colors.white.withOpacity(
-                                      _canCapture ? 1.0 : 0.3,
-                                    ),
-                                    border: Border.all(
-                                      color: _canCapture
-                                          ? Colors.white
-                                          : Colors.grey,
-                                      width: 4,
-                                    ),
-                                    boxShadow: _canCapture
-                                        ? [
-                                            BoxShadow(
-                                              color: Colors.white.withOpacity(
-                                                0.3,
-                                              ),
-                                              blurRadius: 10,
-                                              spreadRadius: 2,
-                                            ),
-                                          ]
-                                        : [],
-                                  ),
-                                  child: _isCapturing
-                                      ? const Padding(
-                                          padding: EdgeInsets.all(20),
-                                          child: CircularProgressIndicator(
-                                            color: Colors.black,
-                                            strokeWidth: 3,
-                                          ),
-                                        )
-                                      : Icon(
-                                          Icons.camera,
-                                          color: _canCapture
-                                              ? Colors.black
-                                              : Colors.grey,
-                                          size: 32,
-                                        ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-
-                        // Switch camera button
-                        IconButton(
-                          icon: const Icon(Icons.flip_camera_android),
-                          iconSize: 32,
-                          color: Colors.white,
-                          onPressed: _cameras != null && _cameras!.length > 1
-                              ? _switchCamera
-                              : null,
-                        ),
-
-                        // Tips button
-                        IconButton(
-                          icon: const Icon(Icons.info_outline),
-                          iconSize: 32,
-                          color: Colors.white,
-                          onPressed: _toggleTips,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+          // Face detection overlay
+          if (_isInitialized && _controller != null && _showFaceGuide)
+            RealtimeFaceDetectionOverlay(
+              controller: _controller!,
+              isBabyMode: widget.isBabyMode,
+              onFaceDetected: (result) {
+                // Handle face detection
+              },
             ),
 
-            // Tips overlay
-            if (_showTips)
-              Positioned.fill(
-                child: GestureDetector(
-                  onTap: _toggleTips,
-                  child: Container(
-                    color: Colors.black.withOpacity(0.8),
-                    child: Center(
-                      child: Container(
-                        margin: const EdgeInsets.all(32),
-                        padding: const EdgeInsets.all(24),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(16),
+          // Flash effect
+          AnimatedBuilder(
+            animation: _flashAnimation,
+            builder: (context, child) {
+              return IgnorePointer(
+                child: Container(
+                  color: Colors.white.withOpacity(_flashAnimation.value * 0.8),
+                ),
+              );
+            },
+          ),
+
+          // Top controls
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.black.withOpacity(0.7), Colors.transparent],
+                ),
+              ),
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 10,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // Back button
+                      IconButton(
+                        onPressed: () => Navigator.pop(context),
+                        icon: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.arrow_back,
+                            color: Colors.white,
+                            size: 24,
+                          ),
                         ),
-                        child: Column(
+                      ),
+
+                      // Mode indicator
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
-                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  widget.isBabyMode
-                                      ? 'Baby Photo Tips'
-                                      : 'DV Photo Tips',
-                                  style: const TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.close),
-                                  onPressed: _toggleTips,
-                                ),
-                              ],
+                            Icon(
+                              widget.isBabyMode
+                                  ? Icons.child_care
+                                  : Icons.person,
+                              color: Colors.white,
+                              size: 20,
                             ),
-                            const SizedBox(height: 16),
-                            ..._getTips().map(
-                              (tip) => Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 8,
-                                ),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Icon(
-                                      Icons.check_circle,
-                                      color: Colors.green,
-                                      size: 20,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Text(
-                                        tip,
-                                        style: const TextStyle(fontSize: 14),
-                                      ),
-                                    ),
-                                  ],
-                                ),
+                            const SizedBox(width: 8),
+                            Text(
+                              widget.isBabyMode ? 'Baby Mode' : 'Adult Mode',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
                           ],
                         ),
                       ),
-                    ),
+
+                      // Settings
+                      IconButton(
+                        onPressed: _showCameraSettings,
+                        icon: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.settings,
+                            color: Colors.white,
+                            size: 24,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
+            ),
+          ),
+
+          // Bottom controls
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [Colors.black.withOpacity(0.8), Colors.transparent],
+                ),
+              ),
+              child: SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Secondary controls
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 40),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          // Grid toggle
+                          _buildControlButton(
+                            onPressed: _toggleGrid,
+                            icon: Icons.grid_3x3,
+                            isActive: _showGrid,
+                          ),
+
+                          // Face guide toggle
+                          _buildControlButton(
+                            onPressed: _toggleFaceGuide,
+                            icon: Icons.face_retouching_natural,
+                            isActive: _showFaceGuide,
+                          ),
+
+                          // Flash mode
+                          _buildControlButton(
+                            onPressed: _toggleFlash,
+                            icon: _getFlashIcon(),
+                            isActive: _flashMode != FlashMode.off,
+                          ),
+
+                          // Switch camera
+                          _buildControlButton(
+                            onPressed: _switchCamera,
+                            icon: Icons.flip_camera_ios,
+                            isActive: false,
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    // Main capture controls
+                    Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          // Gallery button
+                          GestureDetector(
+                            onTap: _pickFromGallery,
+                            child: Container(
+                              width: 50,
+                              height: 50,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(15),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.3),
+                                  width: 2,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.photo_library,
+                                color: Colors.white,
+                                size: 28,
+                              ),
+                            ),
+                          ),
+
+                          // Capture button
+                          GestureDetector(
+                            onTap: _isCapturing ? null : _capturePhoto,
+                            child: AnimatedBuilder(
+                              animation: _captureAnimation,
+                              builder: (context, child) {
+                                return Transform.scale(
+                                  scale: _captureAnimation.value,
+                                  child: Container(
+                                    width: 80,
+                                    height: 80,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: Colors.white,
+                                        width: 4,
+                                      ),
+                                    ),
+                                    child: Container(
+                                      margin: const EdgeInsets.all(6),
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        color: _isCapturing
+                                            ? Colors.grey
+                                            : Colors.white,
+                                      ),
+                                      child: _isCapturing
+                                          ? const Padding(
+                                              padding: EdgeInsets.all(20),
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 3,
+                                                valueColor:
+                                                    AlwaysStoppedAnimation<
+                                                      Color
+                                                    >(Colors.blue),
+                                              ),
+                                            )
+                                          : null,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+
+                          // Tips button
+                          GestureDetector(
+                            onTap: _showPhotoTips,
+                            child: Container(
+                              width: 50,
+                              height: 50,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(15),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.3),
+                                  width: 2,
+                                ),
+                              ),
+                              child: const Icon(
+                                Icons.info_outline,
+                                color: Colors.white,
+                                size: 28,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildControlButton({
+    required VoidCallback onPressed,
+    required IconData icon,
+    required bool isActive,
+  }) {
+    return IconButton(
+      onPressed: onPressed,
+      icon: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: isActive
+              ? Colors.white.withOpacity(0.3)
+              : Colors.white.withOpacity(0.1),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          icon,
+          color: isActive ? Colors.white : Colors.white70,
+          size: 22,
+        ),
+      ),
+    );
+  }
+
+  IconData _getFlashIcon() {
+    switch (_flashMode) {
+      case FlashMode.off:
+        return Icons.flash_off;
+      case FlashMode.auto:
+        return Icons.flash_auto;
+      case FlashMode.always:
+        return Icons.flash_on;
+      default:
+        return Icons.flash_off;
+    }
+  }
+
+  Future<void> _pickFromGallery() async {
+    // Implement gallery picker
+    Navigator.pushNamed(context, '/gallery-picker');
+  }
+
+  void _showPhotoTips() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'DV Photo Tips',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            _buildTip(Icons.face, 'Face straight ahead, neutral expression'),
+            _buildTip(Icons.wb_sunny, 'Good, even lighting'),
+            _buildTip(
+              Icons.format_color_reset,
+              'Plain white or light background',
+            ),
+            _buildTip(Icons.remove_red_eye, 'Eyes open and visible'),
+            if (widget.isBabyMode)
+              _buildTip(
+                Icons.child_care,
+                'Support baby\'s head, no toys visible',
+              ),
+            const SizedBox(height: 20),
           ],
         ),
       ),
     );
   }
 
-  List<String> _getTips() {
-    if (widget.isBabyMode) {
-      return [
-        'Lay baby on a plain white surface',
-        'Ensure baby\'s eyes are open if possible',
-        'Support baby\'s head to face camera',
-        'Use soft, even lighting',
-        'Remove pacifiers and toys from view',
-        'Take multiple photos for best results',
-      ];
-    } else {
-      return [
-        'Face the camera directly',
-        'Maintain neutral expression',
-        'Keep eyes open and visible',
-        'Use plain white or light background',
-        'Ensure even lighting without shadows',
-        'Remove glasses if they cause glare',
-        'Keep head straight, not tilted',
-        'Face should fill 50-70% of frame',
-      ];
-    }
+  Widget _buildTip(IconData icon, String text) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.blue, size: 24),
+          const SizedBox(width: 12),
+          Expanded(child: Text(text, style: const TextStyle(fontSize: 14))),
+        ],
+      ),
+    );
+  }
+
+  void _showCameraSettings() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Camera Settings',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            // Zoom control
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Zoom', style: TextStyle(fontSize: 16)),
+                Slider(
+                  value: _currentZoom,
+                  min: _minZoom,
+                  max: _maxZoom,
+                  onChanged: (value) async {
+                    setState(() {
+                      _currentZoom = value;
+                    });
+                    await _controller?.setZoomLevel(value);
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
   }
 }
 
-/// Grid painter for camera overlay
+// Grid painter for composition guide
 class GridPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -851,5 +888,5 @@ class GridPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(GridPainter oldDelegate) => false;
+  bool shouldRepaint(CustomPainter oldDelegate) => false;
 }
