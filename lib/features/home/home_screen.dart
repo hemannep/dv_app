@@ -97,9 +97,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   void _startTipsRotation() {
     _tipsTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
-      setState(() {
-        _currentTipIndex = (_currentTipIndex + 1) % _tips.length;
-      });
+      if (mounted) {
+        setState(() {
+          _currentTipIndex = (_currentTipIndex + 1) % _tips.length;
+        });
+      }
     });
   }
 
@@ -115,77 +117,81 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    return Consumer<ThemeProvider>(
+      builder: (context, themeProvider, child) {
+        final theme = Theme.of(context);
+        final isDark = themeProvider.isDarkModeActive(context);
 
-    return Scaffold(
-      backgroundColor: Colors.grey[50],
-      body: Stack(
-        children: [
-          // Background gradient
-          Container(
-            height: 300,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  theme.primaryColor,
-                  theme.primaryColor.withOpacity(0.7),
-                ],
+        return Scaffold(
+          backgroundColor: isDark ? const Color(0xFF121212) : Colors.grey[50],
+          body: Stack(
+            children: [
+              // Background gradient
+              Container(
+                height: 300,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      theme.primaryColor,
+                      theme.primaryColor.withOpacity(0.7),
+                    ],
+                  ),
+                ),
               ),
-            ),
-          ),
 
-          // Main content
-          SafeArea(
-            child: CustomScrollView(
-              slivers: [
-                // Custom App Bar
-                SliverAppBar(
-                  expandedHeight: 180,
-                  floating: false,
-                  pinned: true,
-                  backgroundColor: Colors.transparent,
-                  elevation: 0,
-                  flexibleSpace: FlexibleSpaceBar(
-                    background: Container(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          FadeTransition(
-                            opacity: _fadeAnimation,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Welcome Back! 👋',
-                                        style: TextStyle(
-                                          color: Colors.white.withOpacity(0.9),
-                                          fontSize: 16,
-                                        ),
+              // Main content
+              SafeArea(
+                child: CustomScrollView(
+                  slivers: [
+                    // Custom App Bar
+                    SliverAppBar(
+                      expandedHeight: 180,
+                      floating: false,
+                      pinned: true,
+                      backgroundColor: Colors.transparent,
+                      elevation: 0,
+                      flexibleSpace: FlexibleSpaceBar(
+                        background: Container(
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              FadeTransition(
+                                opacity: _fadeAnimation,
+                                child: Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            'Welcome Back! 👋',
+                                            style: TextStyle(
+                                              color: Colors.white.withOpacity(
+                                                0.9,
+                                              ),
+                                              fontSize: 16,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 8),
+                                          const Text(
+                                            'DV Lottery Assistant',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 24,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                      const SizedBox(height: 8),
-                                      const Text(
-                                        'DV Lottery Assistant',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 24,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Consumer<ThemeProvider>(
-                                  builder: (context, themeProvider, child) {
-                                    return Container(
+                                    ),
+                                    Container(
                                       decoration: BoxDecoration(
                                         color: Colors.white.withOpacity(0.2),
                                         borderRadius: BorderRadius.circular(12),
@@ -196,81 +202,84 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                                           HapticFeedback.selectionClick();
                                         },
                                         icon: Icon(
-                                          themeProvider.isDarkMode
+                                          themeProvider.isDarkModeActive(
+                                                context,
+                                              )
                                               ? Icons.wb_sunny
                                               : Icons.nightlight_round,
                                           color: Colors.white,
                                         ),
                                       ),
-                                    );
-                                  },
+                                    ),
+                                  ],
                                 ),
-                              ],
-                            ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
-                  ),
-                ),
 
-                // Content
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        // Status Card
-                        SlideTransition(
-                          position: _slideAnimation,
-                          child: _buildStatusCard(context),
-                        ),
-
-                        const SizedBox(height: 24),
-
-                        // Quick Actions
-                        FadeTransition(
-                          opacity: _fadeAnimation,
-                          child: Text(
-                            'Quick Actions',
-                            style: theme.textTheme.headlineSmall?.copyWith(
-                              fontWeight: FontWeight.bold,
+                    // Content
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.all(20),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Status Card
+                            SlideTransition(
+                              position: _slideAnimation,
+                              child: _buildStatusCard(context, isDark),
                             ),
-                          ),
+
+                            const SizedBox(height: 24),
+
+                            // Quick Actions
+                            FadeTransition(
+                              opacity: _fadeAnimation,
+                              child: Text(
+                                'Quick Actions',
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: isDark ? Colors.white : Colors.black87,
+                                ),
+                              ),
+                            ),
+
+                            const SizedBox(height: 16),
+
+                            // Action Cards
+                            ScaleTransition(
+                              scale: _scaleAnimation,
+                              child: _buildActionCards(context, isDark),
+                            ),
+
+                            const SizedBox(height: 24),
+
+                            // Tips Section
+                            _buildTipsSection(context, isDark),
+
+                            const SizedBox(height: 24),
+
+                            // Info Cards
+                            _buildInfoCards(context, isDark),
+                          ],
                         ),
-
-                        const SizedBox(height: 16),
-
-                        // Action Cards
-                        ScaleTransition(
-                          scale: _scaleAnimation,
-                          child: _buildActionCards(context),
-                        ),
-
-                        const SizedBox(height: 24),
-
-                        // Tips Section
-                        _buildTipsSection(context),
-
-                        const SizedBox(height: 24),
-
-                        // Info Cards
-                        _buildInfoCards(context),
-                      ],
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      ),
-      bottomNavigationBar: _buildBottomNavigationBar(context),
+          bottomNavigationBar: _buildBottomNavigationBar(context, isDark),
+        );
+      },
     );
   }
 
-  Widget _buildStatusCard(BuildContext context) {
+  Widget _buildStatusCard(BuildContext context, bool isDark) {
     final theme = Theme.of(context);
     final DateTime now = DateTime.now();
     final bool isRegistrationPeriod = now.month == 10 || now.month == 11;
@@ -384,7 +393,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildActionCards(BuildContext context) {
+  Widget _buildActionCards(BuildContext context, bool isDark) {
     return Column(
       children: [
         ScaleTransition(
@@ -398,6 +407,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               colors: [Colors.blue[400]!, Colors.blue[600]!],
             ),
             onTap: () => _launchDVForm(context),
+            isDark: isDark,
           ),
         ),
         const SizedBox(height: 16),
@@ -411,6 +421,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 subtitle: 'Create DV photos',
                 color: Colors.green,
                 onTap: () => AppRoutes.navigateToPhotoTool(context),
+                isDark: isDark,
               ),
             ),
             const SizedBox(width: 16),
@@ -422,6 +433,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 subtitle: 'View guidelines',
                 color: Colors.purple,
                 onTap: () => _showRequirementsDialog(context),
+                isDark: isDark,
               ),
             ),
           ],
@@ -437,11 +449,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     required String subtitle,
     required Gradient gradient,
     required VoidCallback onTap,
+    required bool isDark,
   }) {
     return Material(
       elevation: 8,
       shadowColor: gradient.colors.first.withOpacity(0.4),
       borderRadius: BorderRadius.circular(20),
+      color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
       child: InkWell(
         onTap: () {
           HapticFeedback.mediumImpact();
@@ -507,11 +521,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     required String subtitle,
     required Color color,
     required VoidCallback onTap,
+    required bool isDark,
   }) {
     return Material(
       elevation: 4,
       shadowColor: color.withOpacity(0.3),
       borderRadius: BorderRadius.circular(16),
+      color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
       child: InkWell(
         onTap: () {
           HapticFeedback.lightImpact();
@@ -521,7 +537,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         child: Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
+            color: color.withOpacity(isDark ? 0.2 : 0.1),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: color.withOpacity(0.3), width: 1),
           ),
@@ -557,14 +573,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildTipsSection(BuildContext context) {
+  Widget _buildTipsSection(BuildContext context, bool isDark) {
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 500),
       child: Container(
         key: ValueKey(_currentTipIndex),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.amber.withOpacity(0.1),
+          color: Colors.amber.withOpacity(isDark ? 0.2 : 0.1),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: Colors.amber.withOpacity(0.3), width: 1),
         ),
@@ -586,7 +602,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             Expanded(
               child: Text(
                 _tips[_currentTipIndex],
-                style: const TextStyle(fontSize: 14),
+                style: TextStyle(
+                  fontSize: 14,
+                  color: isDark
+                      ? Colors.white.withOpacity(0.9)
+                      : Colors.black87,
+                ),
               ),
             ),
           ],
@@ -595,15 +616,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildInfoCards(BuildContext context) {
+  Widget _buildInfoCards(BuildContext context, bool isDark) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           'Important Information',
-          style: Theme.of(
-            context,
-          ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.bold,
+            color: isDark ? Colors.white : Colors.black87,
+          ),
         ),
         const SizedBox(height: 16),
         _buildInfoCard(
@@ -616,6 +638,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             '2 years work experience',
           ],
           color: Colors.blue,
+          isDark: isDark,
         ),
         const SizedBox(height: 12),
         _buildInfoCard(
@@ -628,6 +651,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             'Taken within 6 months',
           ],
           color: Colors.green,
+          isDark: isDark,
         ),
       ],
     );
@@ -639,15 +663,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     required String title,
     required List<String> items,
     required Color color,
+    required bool isDark,
   }) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.05),
+            color: Colors.black.withOpacity(isDark ? 0.3 : 0.05),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -671,9 +696,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : Colors.black87,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -689,7 +715,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                             item,
                             style: TextStyle(
                               fontSize: 13,
-                              color: Colors.grey[700],
+                              color: isDark
+                                  ? Colors.white.withOpacity(0.7)
+                                  : Colors.grey[700],
                             ),
                           ),
                         ),
@@ -705,12 +733,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildBottomNavigationBar(BuildContext context) {
+  Widget _buildBottomNavigationBar(BuildContext context, bool isDark) {
     return Container(
       decoration: BoxDecoration(
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
+            color: Colors.black.withOpacity(isDark ? 0.4 : 0.1),
             blurRadius: 20,
             offset: const Offset(0, -5),
           ),
@@ -737,9 +765,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           }
         },
         elevation: 0,
-        backgroundColor: Colors.white,
+        backgroundColor: isDark ? const Color(0xFF1E1E1E) : Colors.white,
         selectedItemColor: Theme.of(context).primaryColor,
-        unselectedItemColor: Colors.grey,
+        unselectedItemColor: isDark ? Colors.grey[400] : Colors.grey,
         type: BottomNavigationBarType.fixed,
         items: const [
           BottomNavigationBarItem(
@@ -793,6 +821,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _showRequirementsDialog(BuildContext context) {
+    final isDark = Provider.of<ThemeProvider>(
+      context,
+      listen: false,
+    ).isDarkModeActive(context);
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -802,9 +835,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         minChildSize: 0.5,
         maxChildSize: 0.9,
         builder: (context, scrollController) => Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          decoration: BoxDecoration(
+            color: isDark ? const Color(0xFF1E1E1E) : Colors.white,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
           ),
           child: Column(
             children: [
@@ -813,7 +846,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 height: 4,
                 margin: const EdgeInsets.only(top: 12, bottom: 20),
                 decoration: BoxDecoration(
-                  color: Colors.grey[300],
+                  color: isDark ? Colors.grey[600] : Colors.grey[300],
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -825,7 +858,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     Text(
                       'DV Lottery Requirements',
                       style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.bold),
+                          ?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : Colors.black87,
+                          ),
                     ),
                     const SizedBox(height: 20),
                     _buildRequirementSection(
@@ -838,6 +874,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       ],
                       Icons.checklist,
                       Colors.blue,
+                      isDark,
                     ),
                     const SizedBox(height: 20),
                     _buildRequirementSection(
@@ -851,6 +888,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       ],
                       Icons.camera,
                       Colors.green,
+                      isDark,
                     ),
                     const SizedBox(height: 20),
                     _buildRequirementSection(
@@ -864,6 +902,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                       ],
                       Icons.warning,
                       Colors.orange,
+                      isDark,
                     ),
                     const SizedBox(height: 30),
                     ElevatedButton.icon(
@@ -878,6 +917,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
+                        backgroundColor: Theme.of(context).primaryColor,
+                        foregroundColor: Colors.white,
                       ),
                     ),
                   ],
@@ -895,6 +936,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     List<String> items,
     IconData icon,
     Color color,
+    bool isDark,
   ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -912,7 +954,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             const SizedBox(width: 12),
             Text(
               title,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: isDark ? Colors.white : Colors.black87,
+              ),
             ),
           ],
         ),
@@ -926,7 +972,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 Icon(Icons.check_circle, color: color, size: 16),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(item, style: const TextStyle(fontSize: 14)),
+                  child: Text(
+                    item,
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: isDark
+                          ? Colors.white.withOpacity(0.8)
+                          : Colors.black87,
+                    ),
+                  ),
                 ),
               ],
             ),
