@@ -1,16 +1,14 @@
-// lib/screens/photo_tool_screen.dart
-
-import 'package:dvapp/core/services/enhanced_face_detection_service.dart';
-import 'package:dvapp/features/photo_preview/photo_preview_screen.dart';
-import 'package:dvapp/screens/camera_screen.dart';
+// lib/features/photo/photo_tool_screen.dart
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:camera/camera.dart';
-import 'package:image/image.dart' as img;
-import 'dart:io';
-import 'dart:async';
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+// Import screens
+import '../../screens/camera_screen.dart';
+import '../photo_preview/photo_preview_screen.dart';
 
 class PhotoToolScreen extends StatefulWidget {
   const PhotoToolScreen({super.key});
@@ -21,94 +19,76 @@ class PhotoToolScreen extends StatefulWidget {
 
 class _PhotoToolScreenState extends State<PhotoToolScreen>
     with TickerProviderStateMixin {
-  final ImagePicker _picker = ImagePicker();
+  // Animation controllers
+  late AnimationController _headerAnimationController;
+  late AnimationController _cardAnimationController;
+  late AnimationController _buttonAnimationController;
+  late Animation<double> _headerAnimation;
+  late Animation<double> _cardAnimation;
+  late Animation<double> _buttonAnimation;
+
+  // State variables
   bool _isBabyMode = false;
   bool _isProcessing = false;
   String _processingMessage = '';
-
-  // Statistics
   int _photosProcessed = 0;
   int _successfulPhotos = 0;
 
-  // Animation controllers
-  late AnimationController _fadeController;
-  late AnimationController _slideController;
-  late AnimationController _pulseController;
-  late Animation<double> _fadeAnimation;
-  late Animation<Offset> _slideAnimation;
-  late Animation<double> _pulseAnimation;
-
-  // Timer for tips rotation
-  Timer? _tipsTimer;
-  int _currentTipIndex = 0;
-
-  final List<String> _adultTips = [
-    'Use natural light and plain background',
-    'Face the camera directly with neutral expression',
-    'Remove glasses unless medically required',
-    'Ensure face fills 50-70% of the frame',
-    'Keep both eyes open and clearly visible',
-  ];
-
-  final List<String> _babyTips = [
-    'Place baby on a plain white blanket',
-    'Support baby\'s head to face camera',
-    'Use soft, even lighting without flash',
-    'Remove pacifiers and toys from view',
-    'Take multiple photos for best results',
-  ];
+  // Image picker
+  final ImagePicker _picker = ImagePicker();
 
   @override
   void initState() {
     super.initState();
     _initializeAnimations();
     _loadStatistics();
-    _startTipsRotation();
     _loadModePreference();
   }
 
   void _initializeAnimations() {
-    _fadeController = AnimationController(
+    _headerAnimationController = AnimationController(
       duration: const Duration(milliseconds: 800),
       vsync: this,
     );
 
-    _slideController = AnimationController(
+    _cardAnimationController = AnimationController(
       duration: const Duration(milliseconds: 600),
       vsync: this,
     );
 
-    _pulseController = AnimationController(
-      duration: const Duration(seconds: 2),
+    _buttonAnimationController = AnimationController(
+      duration: const Duration(milliseconds: 400),
       vsync: this,
     );
 
-    _fadeAnimation = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _fadeController, curve: Curves.easeIn));
-
-    _slideAnimation =
-        Tween<Offset>(begin: const Offset(0, 0.5), end: Offset.zero).animate(
-          CurvedAnimation(parent: _slideController, curve: Curves.easeOutCubic),
-        );
-
-    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.1).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    _headerAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _headerAnimationController,
+        curve: Curves.easeOut,
+      ),
     );
 
-    _fadeController.forward();
-    _slideController.forward();
-    _pulseController.repeat(reverse: true);
-  }
+    _cardAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _cardAnimationController,
+        curve: Curves.elasticOut,
+      ),
+    );
 
-  void _startTipsRotation() {
-    _tipsTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      setState(() {
-        _currentTipIndex =
-            (_currentTipIndex + 1) %
-            (_isBabyMode ? _babyTips.length : _adultTips.length);
-      });
+    _buttonAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _buttonAnimationController,
+        curve: Curves.bounceOut,
+      ),
+    );
+
+    // Start animations with delays
+    _headerAnimationController.forward();
+    Future.delayed(const Duration(milliseconds: 200), () {
+      _cardAnimationController.forward();
+    });
+    Future.delayed(const Duration(milliseconds: 400), () {
+      _buttonAnimationController.forward();
     });
   }
 
@@ -165,10 +145,16 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
                   return FadeTransition(
                     opacity: animation,
                     child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(1.0, 0.0),
-                        end: Offset.zero,
-                      ).animate(animation),
+                      position:
+                          Tween<Offset>(
+                            begin: const Offset(1.0, 0.0),
+                            end: Offset.zero,
+                          ).animate(
+                            CurvedAnimation(
+                              parent: animation,
+                              curve: Curves.easeOut,
+                            ),
+                          ),
                       child: child,
                     ),
                   );
@@ -204,6 +190,8 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
       final XFile? pickedFile = await _picker.pickImage(
         source: ImageSource.gallery,
         imageQuality: 100,
+        maxWidth: 2000,
+        maxHeight: 2000,
       );
 
       if (pickedFile != null) {
@@ -221,399 +209,84 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
           return;
         }
 
-        // Load the image for face detection
-        final File imageFile = File(pickedFile.path);
-        final bytes = await imageFile.readAsBytes();
-
-        // Check file size
-        if (bytes.length > 240 * 1024) {
-          setState(() {
-            _processingMessage = 'Image too large, compressing...';
-          });
-        }
-
-        final image = img.decodeImage(bytes);
-
-        if (image != null) {
-          setState(() {
-            _processingMessage = 'Detecting face...';
-          });
-
-          // Haptic feedback
-          HapticFeedback.lightImpact();
-
-          // Perform face detection
-          final detectionResult = await EnhancedFaceDetectionService.instance
-              .detectFace(
-                imageSource: image,
+        // Navigate to preview screen without detection result
+        if (mounted) {
+          final result = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+              builder: (context) => PhotoPreviewScreen(
+                imagePath: pickedFile.path,
                 isBabyMode: _isBabyMode,
-                useMultipleStrategies: true,
-              );
-
-          setState(() {
-            _photosProcessed++;
-          });
-
-          // Navigate to preview with detection result
-          if (mounted) {
-            final result = await Navigator.push<bool>(
-              context,
-              PageRouteBuilder(
-                pageBuilder: (context, animation, secondaryAnimation) =>
-                    PhotoPreviewScreen(
-                      imagePath: pickedFile.path,
-                      isBabyMode: _isBabyMode,
-                      detectionResult: detectionResult,
-                    ),
-                transitionsBuilder:
-                    (context, animation, secondaryAnimation, child) {
-                      return FadeTransition(
-                        opacity: animation,
-                        child: ScaleTransition(scale: animation, child: child),
-                      );
-                    },
+                // No detectionResult parameter needed
               ),
-            );
-
-            if (result == true) {
-              setState(() {
-                _successfulPhotos++;
-              });
-              await _saveStatistics();
-              _showSuccessMessage('Photo processed and saved successfully!');
-            }
-          }
-        } else {
-          _showErrorDialog(
-            'Invalid Image',
-            'Could not process the selected image. Please try another photo.',
+            ),
           );
+
+          if (result == true) {
+            setState(() {
+              _photosProcessed++;
+              _successfulPhotos++;
+            });
+            await _saveStatistics();
+            _showSuccessMessage('Photo processed successfully!');
+          }
         }
       }
     } catch (e) {
-      print('Error picking image: $e');
+      print('Gallery picker error: $e');
       _showErrorDialog(
-        'Processing Error',
-        'An error occurred: ${e.toString()}',
+        'Gallery Error',
+        'Failed to pick image from gallery: ${e.toString()}',
       );
     } finally {
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-          _processingMessage = '';
-        });
-        await _saveStatistics();
-      }
+      setState(() {
+        _isProcessing = false;
+        _processingMessage = '';
+      });
     }
   }
 
-  void _toggleMode() {
+  void _toggleBabyMode() {
     setState(() {
       _isBabyMode = !_isBabyMode;
-      _currentTipIndex = 0; // Reset tip index
     });
     _saveModePreference();
+    HapticFeedback.lightImpact();
 
-    // Haptic feedback
-    HapticFeedback.selectionClick();
-
-    // Show mode change animation
-    _slideController.reset();
-    _slideController.forward();
-  }
-
-  void _showPhotoRequirements() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.75,
-        minChildSize: 0.5,
-        maxChildSize: 0.95,
-        builder: (context, scrollController) => Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          child: Column(
-            children: [
-              Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(top: 12, bottom: 20),
-                decoration: BoxDecoration(
-                  color: Colors.grey[300],
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              Expanded(
-                child: ListView(
-                  controller: scrollController,
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  children: [
-                    Text(
-                      'DV Photo Requirements',
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 20),
-                    _buildRequirementSection('Technical Specifications', [
-                      _buildRequirement(
-                        Icons.aspect_ratio,
-                        'Dimensions',
-                        '600 x 600 pixels (square)',
-                      ),
-                      _buildRequirement(
-                        Icons.storage,
-                        'File Size',
-                        'Maximum 240 KB',
-                      ),
-                      _buildRequirement(
-                        Icons.image,
-                        'Format',
-                        'JPEG (.jpg) only',
-                      ),
-                    ]),
-                    _buildRequirementSection('Photo Composition', [
-                      _buildRequirement(
-                        Icons.face,
-                        'Face Position',
-                        'Face must fill 50-70% of the image',
-                      ),
-                      _buildRequirement(
-                        Icons.center_focus_strong,
-                        'Centering',
-                        'Head centered and straight',
-                      ),
-                      _buildRequirement(
-                        Icons.wallpaper,
-                        'Background',
-                        'Plain white or off-white',
-                      ),
-                    ]),
-                    _buildRequirementSection('Quality Requirements', [
-                      _buildRequirement(
-                        Icons.wb_sunny,
-                        'Lighting',
-                        'Even lighting, no shadows on face',
-                      ),
-                      _buildRequirement(
-                        Icons.blur_off,
-                        'Focus',
-                        'Sharp focus, no blur',
-                      ),
-                      _buildRequirement(
-                        Icons.high_quality,
-                        'Resolution',
-                        'High quality, no pixelation',
-                      ),
-                    ]),
-                    _buildRequirementSection('Subject Requirements', [
-                      _buildRequirement(
-                        Icons.sentiment_neutral,
-                        'Expression',
-                        'Neutral expression, both eyes open',
-                      ),
-                      _buildRequirement(
-                        Icons.visibility,
-                        'Glasses',
-                        'No glasses unless medically required',
-                      ),
-                      _buildRequirement(
-                        Icons.checkroom,
-                        'Clothing',
-                        'Normal street attire, no uniforms',
-                      ),
-                    ]),
-                    if (_isBabyMode) ...[
-                      const SizedBox(height: 20),
-                      _buildRequirementSection(
-                        'Baby Photo Special Requirements',
-                        [
-                          _buildRequirement(
-                            Icons.child_care,
-                            'Position',
-                            'Baby lying on back, head supported',
-                          ),
-                          _buildRequirement(
-                            Icons.remove_red_eye,
-                            'Eyes',
-                            'Eyes open if possible (flexible)',
-                          ),
-                          _buildRequirement(
-                            Icons.do_not_disturb,
-                            'No Props',
-                            'No toys, pacifiers, or hands visible',
-                          ),
-                          _buildRequirement(
-                            Icons.person_off,
-                            'No Others',
-                            'Only baby in photo, no supporting hands',
-                          ),
-                        ],
-                      ),
-                    ],
-                    const SizedBox(height: 30),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildRequirementSection(String title, List<Widget> requirements) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          child: Text(
-            title,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Colors.black87,
-            ),
-          ),
-        ),
-        ...requirements,
-      ],
-    );
-  }
-
-  Widget _buildRequirement(IconData icon, String title, String description) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Theme.of(context).primaryColor.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, size: 24, color: Theme.of(context).primaryColor),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  description,
-                  style: TextStyle(color: Colors.grey[600], fontSize: 14),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showStatistics() {
-    final successRate = _photosProcessed > 0
-        ? (_successfulPhotos / _photosProcessed * 100).toStringAsFixed(1)
-        : '0.0';
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(Icons.analytics, color: Theme.of(context).primaryColor),
-            const SizedBox(width: 12),
-            const Text('Statistics'),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildStatRow('Photos Processed', _photosProcessed.toString()),
-            _buildStatRow('Successful Photos', _successfulPhotos.toString()),
-            _buildStatRow('Success Rate', '$successRate%'),
-            const SizedBox(height: 16),
-            if (_photosProcessed > 0)
-              LinearProgressIndicator(
-                value: _successfulPhotos / _photosProcessed,
-                backgroundColor: Colors.grey[300],
-                valueColor: AlwaysStoppedAnimation<Color>(
-                  Theme.of(context).primaryColor,
-                ),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              // Reset statistics
-              setState(() {
-                _photosProcessed = 0;
-                _successfulPhotos = 0;
-              });
-              await _saveStatistics();
-              Navigator.pop(context);
-              _showSuccessMessage('Statistics reset');
-            },
-            child: const Text('Reset'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: const TextStyle(fontSize: 16)),
-          Text(
-            value,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-        ],
-      ),
+    _showSuccessMessage(
+      _isBabyMode
+          ? 'Baby mode enabled - Special settings for infant photos'
+          : 'Standard mode enabled',
     );
   }
 
   void _showErrorDialog(String title, String message) {
-    HapticFeedback.heavyImpact();
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            const Icon(Icons.error_outline, color: Colors.red, size: 28),
-            const SizedBox(width: 12),
-            Text(title),
-          ],
+        backgroundColor: const Color(0xFF1e1e1e),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(
+          title,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        content: Text(message),
+        content: Text(
+          message,
+          style: TextStyle(color: Colors.white.withOpacity(0.8), height: 1.4),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
+            child: Text(
+              'OK',
+              style: TextStyle(
+                color: Colors.blue.shade400,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ],
       ),
@@ -621,117 +294,305 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
   }
 
   void _showSuccessMessage(String message) {
-    HapticFeedback.lightImpact();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.check_circle, color: Colors.white),
-            const SizedBox(width: 12),
-            Expanded(child: Text(message)),
-          ],
-        ),
-        backgroundColor: Colors.green,
+        content: Text(message),
+        backgroundColor: Colors.green.shade600,
+        duration: const Duration(seconds: 2),
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+
+  void _showDVRequirements() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1e1e1e),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'DV Photo Requirements',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildRequirementItem(
+                '✓',
+                'Square format (600x600 pixels minimum)',
+              ),
+              _buildRequirementItem('✓', 'Plain white or off-white background'),
+              _buildRequirementItem('✓', 'Face centered and looking forward'),
+              _buildRequirementItem('✓', 'No glasses or head coverings'),
+              _buildRequirementItem(
+                '✓',
+                'Natural expression (slight smile okay)',
+              ),
+              _buildRequirementItem('✓', 'Good lighting, no shadows'),
+              _buildRequirementItem('✓', 'JPEG format, under 240KB'),
+              if (_isBabyMode) ...[
+                const SizedBox(height: 16),
+                Text(
+                  'Baby Mode Specific:',
+                  style: TextStyle(
+                    color: Colors.blue.shade300,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _buildRequirementItem('👶', 'Eyes must be open and visible'),
+                _buildRequirementItem('👶', 'No pacifiers or toys visible'),
+                _buildRequirementItem('👶', 'Baby should be alone in photo'),
+                _buildRequirementItem('👶', 'Support is okay if not visible'),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(
+              'Got it',
+              style: TextStyle(
+                color: Colors.blue.shade400,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRequirementItem(String icon, String text) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(icon, style: const TextStyle(fontSize: 16)),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.9),
+                fontSize: 14,
+                height: 1.3,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatCard(
+    String title,
+    String value,
+    IconData icon,
+    Color color,
+  ) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.3), width: 1),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 24),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: TextStyle(
+              color: color,
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          Text(
+            title,
+            style: TextStyle(
+              color: Colors.white.withOpacity(0.7),
+              fontSize: 12,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ],
       ),
     );
   }
 
   @override
   void dispose() {
-    _fadeController.dispose();
-    _slideController.dispose();
-    _pulseController.dispose();
-    _tipsTimer?.cancel();
+    _headerAnimationController.dispose();
+    _cardAnimationController.dispose();
+    _buttonAnimationController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final tips = _isBabyMode ? _babyTips : _adultTips;
-
     return Scaffold(
-      backgroundColor: Colors.grey[50],
+      backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: const Text('DV Photo Tool'),
-        backgroundColor: theme.primaryColor,
+        backgroundColor: Colors.transparent,
         elevation: 0,
+        title: const Text(
+          'DV Photo Tool',
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.w600,
+            fontSize: 20,
+          ),
+        ),
+        centerTitle: true,
         actions: [
           IconButton(
-            icon: const Icon(Icons.analytics),
-            onPressed: _showStatistics,
-            tooltip: 'Statistics',
-          ),
-          IconButton(
-            icon: const Icon(Icons.info_outline),
-            onPressed: _showPhotoRequirements,
-            tooltip: 'Requirements',
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          // Background gradient
-          Container(
-            height: 200,
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [theme.primaryColor, theme.primaryColor.withOpacity(0)],
+            onPressed: _showDVRequirements,
+            icon: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade600.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Icon(
+                Icons.help_outline,
+                color: Colors.white,
+                size: 20,
               ),
             ),
           ),
-
-          // Main content
-          SafeArea(
-            child: FadeTransition(
-              opacity: _fadeAnimation,
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Mode selector card
-                    SlideTransition(
-                      position: _slideAnimation,
-                      child: Card(
-                        elevation: 8,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
+        ],
+      ),
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF1a1a1a), Color(0xFF000000)],
+          ),
+        ),
+        child: SafeArea(
+          child: _isProcessing
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const CircularProgressIndicator(
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        _processingMessage,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
                         ),
+                      ),
+                    ],
+                  ),
+                )
+              : SingleChildScrollView(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Header section
+                      FadeTransition(
+                        opacity: _headerAnimation,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Welcome to',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 16,
+                              ),
+                            ),
+                            const Text(
+                              'DV Photo Tool',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Create perfect photos for your Diversity Visa application',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.8),
+                                fontSize: 16,
+                                height: 1.4,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 30),
+
+                      // Statistics
+                      ScaleTransition(
+                        scale: _cardAnimation,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _buildStatCard(
+                                'Photos\nProcessed',
+                                _photosProcessed.toString(),
+                                Icons.photo_camera,
+                                Colors.blue,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: _buildStatCard(
+                                'Successful\nPhotos',
+                                _successfulPhotos.toString(),
+                                Icons.check_circle,
+                                Colors.green,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 30),
+
+                      // Baby mode toggle
+                      ScaleTransition(
+                        scale: _cardAnimation,
                         child: Container(
                           padding: const EdgeInsets.all(20),
                           decoration: BoxDecoration(
+                            color: _isBabyMode
+                                ? Colors.pink.shade900.withOpacity(0.3)
+                                : const Color(0xFF1e1e1e),
                             borderRadius: BorderRadius.circular(16),
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: _isBabyMode
-                                  ? [Colors.pink[50]!, Colors.pink[100]!]
-                                  : [Colors.blue[50]!, Colors.blue[100]!],
+                            border: Border.all(
+                              color: _isBabyMode
+                                  ? Colors.pink.shade400.withOpacity(0.5)
+                                  : Colors.white.withOpacity(0.1),
+                              width: 2,
                             ),
                           ),
                           child: Row(
                             children: [
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 300),
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: _isBabyMode
-                                      ? Colors.pink.withOpacity(0.2)
-                                      : Colors.blue.withOpacity(0.2),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: Icon(
-                                  _isBabyMode ? Icons.child_care : Icons.person,
-                                  size: 32,
-                                  color: _isBabyMode
-                                      ? Colors.pink
-                                      : Colors.blue,
-                                ),
+                              Icon(
+                                _isBabyMode ? Icons.child_care : Icons.person,
+                                color: _isBabyMode
+                                    ? Colors.pink.shade300
+                                    : Colors.white,
+                                size: 28,
                               ),
                               const SizedBox(width: 16),
                               Expanded(
@@ -739,217 +600,193 @@ class _PhotoToolScreenState extends State<PhotoToolScreen>
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      _isBabyMode ? 'Baby Mode' : 'Adult Mode',
-                                      style: const TextStyle(
-                                        fontSize: 20,
+                                      _isBabyMode
+                                          ? 'Baby Mode Active'
+                                          : 'Standard Mode',
+                                      style: TextStyle(
+                                        color: _isBabyMode
+                                            ? Colors.pink.shade200
+                                            : Colors.white,
+                                        fontSize: 18,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
                                     Text(
                                       _isBabyMode
-                                          ? 'Optimized for infant photos'
-                                          : 'Standard DV requirements',
+                                          ? 'Special settings for infant photos'
+                                          : 'Standard photo capture mode',
                                       style: TextStyle(
+                                        color: Colors.white.withOpacity(0.7),
                                         fontSize: 14,
-                                        color: Colors.grey[600],
                                       ),
                                     ),
                                   ],
                                 ),
                               ),
-                              Transform.scale(
-                                scale: 1.2,
-                                child: Switch(
-                                  value: _isBabyMode,
-                                  onChanged: (_) => _toggleMode(),
-                                  activeThumbColor: Colors.pink,
-                                  inactiveThumbColor: Colors.blue,
-                                  inactiveTrackColor: Colors.blue.withOpacity(
-                                    0.3,
-                                  ),
-                                ),
+                              Switch(
+                                value: _isBabyMode,
+                                onChanged: (value) => _toggleBabyMode(),
+                                activeColor: Colors.pink.shade400,
+                                activeTrackColor: Colors.pink.shade400
+                                    .withOpacity(0.3),
+                                inactiveThumbColor: Colors.white,
+                                inactiveTrackColor: Colors.grey.shade600,
                               ),
                             ],
                           ),
                         ),
                       ),
-                    ),
 
-                    const SizedBox(height: 30),
+                      const SizedBox(height: 30),
 
-                    // Main action buttons
-                    Expanded(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          // Take photo button
-                          ScaleTransition(
-                            scale: _pulseAnimation,
-                            child: _buildActionCard(
-                              icon: Icons.camera_alt,
-                              title: 'Take Photo',
-                              subtitle: 'Camera with live guidance',
-                              color: Colors.green,
-                              onTap: _openCamera,
-                              isPrimary: true,
-                            ),
-                          ),
-
-                          const SizedBox(height: 20),
-
-                          // Choose from gallery button
-                          _buildActionCard(
-                            icon: Icons.photo_library,
-                            title: 'Choose from Gallery',
-                            subtitle: 'Select existing photo',
-                            color: Colors.orange,
-                            onTap: _isProcessing ? null : _pickFromGallery,
-                            isLoading: _isProcessing,
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    // Tips carousel
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 500),
-                      child: Container(
-                        key: ValueKey(_currentTipIndex),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.amber.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: Colors.amber.withOpacity(0.3),
-                            width: 1,
-                          ),
-                        ),
-                        child: Row(
+                      // Action buttons
+                      ScaleTransition(
+                        scale: _buttonAnimation,
+                        child: Column(
                           children: [
-                            Icon(
-                              Icons.lightbulb_outline,
-                              color: Colors.amber[700],
-                              size: 24,
+                            // Camera button
+                            SizedBox(
+                              width: double.infinity,
+                              height: 60,
+                              child: ElevatedButton.icon(
+                                onPressed: _openCamera,
+                                icon: const Icon(Icons.camera_alt, size: 24),
+                                label: Text(
+                                  _isBabyMode
+                                      ? 'Take Baby Photo'
+                                      : 'Take Photo',
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blue.shade600,
+                                  foregroundColor: Colors.white,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                  elevation: 8,
+                                  shadowColor: Colors.blue.shade600.withOpacity(
+                                    0.3,
+                                  ),
+                                ),
+                              ),
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                tips[_currentTipIndex],
-                                style: const TextStyle(fontSize: 14),
+
+                            const SizedBox(height: 16),
+
+                            // Gallery button
+                            SizedBox(
+                              width: double.infinity,
+                              height: 60,
+                              child: OutlinedButton.icon(
+                                onPressed: _pickFromGallery,
+                                icon: const Icon(Icons.photo_library, size: 24),
+                                label: const Text(
+                                  'Choose from Gallery',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  side: BorderSide(
+                                    color: Colors.white.withOpacity(0.3),
+                                    width: 2,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                  ),
+                                ),
                               ),
                             ),
                           ],
                         ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
 
-          // Processing overlay
-          if (_isProcessing)
-            Container(
-              color: Colors.black.withOpacity(0.7),
-              child: Center(
-                child: Card(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const CircularProgressIndicator(),
-                        const SizedBox(height: 20),
-                        Text(
-                          _processingMessage.isNotEmpty
-                              ? _processingMessage
-                              : 'Processing...',
-                          style: theme.textTheme.titleMedium,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
+                      const SizedBox(height: 30),
 
-  Widget _buildActionCard({
-    required IconData icon,
-    required String title,
-    required String subtitle,
-    required Color color,
-    required VoidCallback? onTap,
-    bool isLoading = false,
-    bool isPrimary = false,
-  }) {
-    return Material(
-      elevation: isPrimary ? 12 : 6,
-      shadowColor: color.withOpacity(0.4),
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(16),
-        child: Container(
-          padding: const EdgeInsets.all(24),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [color.withOpacity(0.1), color.withOpacity(0.05)],
-            ),
-            border: Border.all(color: color.withOpacity(0.3), width: 2),
-          ),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: isLoading
-                    ? SizedBox(
-                        width: 32,
-                        height: 32,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          valueColor: AlwaysStoppedAnimation<Color>(color),
+                      // Tips section
+                      ScaleTransition(
+                        scale: _cardAnimation,
+                        child: Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade900.withOpacity(0.2),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: Colors.green.shade400.withOpacity(0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.lightbulb_outline,
+                                    color: Colors.green.shade300,
+                                    size: 24,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Text(
+                                    'Quick Tips',
+                                    style: TextStyle(
+                                      color: Colors.green.shade200,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              ...[
+                                    '• Use good lighting (natural daylight is best)',
+                                    '• Keep face centered in the square frame',
+                                    '• Maintain neutral expression',
+                                    '• Ensure plain background',
+                                    if (_isBabyMode)
+                                      '• Keep baby calm and still',
+                                  ]
+                                  .map(
+                                    (tip) => Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 2,
+                                      ),
+                                      child: Text(
+                                        tip,
+                                        style: TextStyle(
+                                          color: Colors.white.withOpacity(0.8),
+                                          fontSize: 14,
+                                          height: 1.4,
+                                        ),
+                                      ),
+                                    ),
+                                  )
+                                  .toList(),
+                            ],
+                          ),
                         ),
-                      )
-                    : Icon(icon, size: 32, color: color),
-              ),
-              const SizedBox(width: 20),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: TextStyle(
-                        fontSize: isPrimary ? 20 : 18,
-                        fontWeight: FontWeight.bold,
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      isLoading ? 'Processing...' : subtitle,
-                      style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                    ),
-                  ],
+
+                      const SizedBox(height: 20),
+
+                      // Footer
+                      Center(
+                        child: Text(
+                          'Created for U.S. Diversity Visa Program',
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.5),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Icon(Icons.arrow_forward_ios, color: color, size: 20),
-            ],
-          ),
         ),
       ),
     );
